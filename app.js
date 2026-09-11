@@ -1,7 +1,13 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.8";
-const logLines = [];
+const LOG_VERSION = "0.9";
+const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
+const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
+let logLines = [];
+try{
+  const prev = JSON.parse(localStorage.getItem(PERSISTENT_LOG_KEY) || "[]");
+  if(Array.isArray(prev)) logLines = prev.slice(-500);
+}catch(_){ logLines = []; }
 function nowISO(){ return new Date().toISOString(); }
 function safeJson(v){
   try { return JSON.stringify(v); } catch(_) { return String(v); }
@@ -10,6 +16,7 @@ function log(type, message, data){
   const line = `[${nowISO()}] [${type}] ${message}` + (data !== undefined ? ` | ${typeof data === "string" ? data : safeJson(data)}` : "");
   logLines.push(line);
   if(logLines.length > 2000) logLines.shift();
+  try{ localStorage.setItem(PERSISTENT_LOG_KEY, JSON.stringify(logLines.slice(-500))); }catch(_){} 
   const box = document.getElementById("debugLog");
   if(box){ box.value = logLines.join("\n"); box.scrollTop = box.scrollHeight; }
   try { console.log(line); } catch(_) {}
@@ -30,6 +37,17 @@ window.addEventListener("error", e => {
 });
 window.addEventListener("unhandledrejection", e => {
   logError("UNHANDLED_REJECTION", e.reason);
+});
+window.addEventListener("pagehide", e => {
+  try{ persistText("pagehide"); }catch(_){}
+  log("LIFECYCLE","pagehide",{persisted:e.persisted,visibility:document.visibilityState});
+});
+window.addEventListener("pageshow", e => {
+  log("LIFECYCLE","pageshow",{persisted:e.persisted,visibility:document.visibilityState});
+});
+document.addEventListener("visibilitychange", () => {
+  try{ persistText("visibilitychange"); }catch(_){}
+  log("LIFECYCLE","visibilitychange",{visibility:document.visibilityState});
 });
 
 const els = {
@@ -230,6 +248,7 @@ const STORAGE = {
 function storageSet(key, value){
   try{
     localStorage.setItem(key, String(value));
+    if(key === "gnr:text:v1") localStorage.setItem(TEXT_BACKUP_KEY, String(value));
     return true;
   }catch(err){
     logError("storageSet", err);
@@ -255,7 +274,13 @@ function persistText(reason="change"){
   log("STORAGE","text persisted",{reason,chars:els.text.value.length,ok});
 }
 function restorePersistentState(){
-  const savedText = storageGet(STORAGE.text,"");
+  let savedText = storageGet(STORAGE.text,"");
+  if(!savedText){
+    try{
+      savedText = localStorage.getItem(TEXT_BACKUP_KEY) || "";
+      if(savedText) log("STORAGE","text restored from backup",{chars:savedText.length});
+    }catch(err){ logError("backup restore",err); }
+  }
   if(savedText){
     els.text.value = savedText;
     log("STORAGE","text restored",{chars:savedText.length});
@@ -297,7 +322,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.8",{
+log("BOOT","App loaded v0.9",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -497,7 +522,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.8 START =====");
+  log("DIAG","===== DIAGNOSE v0.9 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -553,12 +578,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.8 OK =====");
+    log("DIAG","===== DIAGNOSE v0.9 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.8 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.9 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -708,6 +733,7 @@ els.copyLog.addEventListener("click",async()=>{
 
 els.clearLog.addEventListener("click",()=>{
   logLines.length=0;
+  try{ localStorage.removeItem(PERSISTENT_LOG_KEY); }catch(_){}
   els.debugLog.value="";
   log("LOG","Log cleared by user");
 });
