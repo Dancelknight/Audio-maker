@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.17";
+const LOG_VERSION = "0.18";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.17",{
+log("BOOT","App loaded v0.18",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -687,7 +687,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.17 START =====");
+  log("DIAG","===== DIAGNOSE v0.18 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -743,12 +743,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.17 OK =====");
+    log("DIAG","===== DIAGNOSE v0.18 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.17 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.18 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -759,118 +759,236 @@ async function generate(){
   const txt=els.text.value.trim(); if(!txt)return;
   let jobKey=null;
   try{
-    cancelRequested=false; els.generate.disabled=true;els.cancel.disabled=false;els.preview.disabled=true;els.result.classList.add("hidden");
+    cancelRequested=false;
+    els.generate.disabled=true;
+    els.cancel.disabled=false;
+    els.preview.disabled=true;
+    els.result.classList.add("hidden");
 
     const chunks=makeChunks(txt);
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
     jobKey=await makeJobKey(txt,chunks);
-    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value),mode:"checkpoint-two-phase",jobKey});
 
-    // Phase 1 does NOT load ONNX at all. This keeps Safari's memory footprint lower.
-    const voice="de";
     let checkpoint=await jobGet(jobKey);
     let phonemeBatches=checkpoint?.phonemeBatches || new Array(chunks.length);
+    let phase=checkpoint?.phase || "phoneme";
     let startIndex=Number(checkpoint?.done||0);
+    let audioDone=Number(checkpoint?.audioDone||0);
+
     if(!Array.isArray(phonemeBatches) || phonemeBatches.length!==chunks.length){
       phonemeBatches=new Array(chunks.length);
+      phase="phoneme";
       startIndex=0;
+      audioDone=0;
     }
 
-    if(startIndex>0){
-      log("CHECKPOINT","resume",{jobKey,done:startIndex,total:chunks.length});
-      setStatus(`Fortsetzen ab Phonemisierung ${startIndex+1}/${chunks.length} …`,(startIndex/chunks.length)*.35,`${Math.round(startIndex/chunks.length*100)} %`);
-    }
+    log("GENERATE","start",{
+      textLength:txt.length,
+      chunks:chunks.length,
+      speed:Number(els.speed.value),
+      sentencePause:Number(els.sentencePause.value),
+      paragraphPause:Number(els.paragraphPause.value),
+      mode:"resumable-segmented-mp3",
+      phase,startIndex,audioDone,jobKey
+    });
 
-    let client=null;
-    try{
-      for(let i=startIndex;i<chunks.length;i++){
-        if(cancelRequested)throw new Error("Abgebrochen");
-        if(!client){
-          client=createPhonemizerClient();
-          log("PHASE1","worker batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
-        }
+    const voice="de";
 
-        const pct=(i/chunks.length)*0.35;
-        setStatus(`Phonemisierung ${i+1}/${chunks.length} …`,pct,`${Math.round((i/chunks.length)*100)} %`);
-        const ids=await client.phonemize(chunks[i].text,voice,45000);
-        if(!Array.isArray(ids)||ids.length<4) throw new Error(`Keine Phoneme für Abschnitt ${i+1}`);
-        phonemeBatches[i]=ids;
-
-        if((i+1)%5===0 || (i+1)===chunks.length){
-          client.close();
-          client=null;
-          log("PHASE1","worker batch released",{done:i+1,total:chunks.length});
-          await sleep(500);
-        }
-
-        // Persistent checkpoint every 25 chunks.
-        if((i+1)%25===0 || (i+1)===chunks.length){
-          await jobPut({key:jobKey,done:i+1,total:chunks.length,phonemeBatches,updatedAt:Date.now()});
-          log("CHECKPOINT","saved",{jobKey,done:i+1,total:chunks.length});
-        }
-
-        // Proactively restart Safari's JS/WASM process before cumulative worker leakage kills it.
-        if((i+1)%150===0 && (i+1)<chunks.length){
-          if(client){client.close();client=null}
-          await jobPut({key:jobKey,done:i+1,total:chunks.length,phonemeBatches,updatedAt:Date.now()});
-          localStorage.setItem(RESUME_KEY,jobKey);
-          setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
-          log("CHECKPOINT","controlled reload",{jobKey,done:i+1,total:chunks.length});
-          await sleep(250);
-          location.reload();
-          return;
-        }
+    // PHASE 1: phonemization with persistent checkpoints.
+    if(phase!=="audio"){
+      if(startIndex>0){
+        log("CHECKPOINT","resume phonemization",{jobKey,done:startIndex,total:chunks.length});
+        setStatus(`Fortsetzen ab Phonemisierung ${startIndex+1}/${chunks.length} …`,(startIndex/chunks.length)*.35,`${Math.round(startIndex/chunks.length*100)} %`);
       }
-    }finally{
-      if(client) client.close();
+
+      let client=null;
+      try{
+        for(let i=startIndex;i<chunks.length;i++){
+          if(cancelRequested)throw new Error("Abgebrochen");
+
+          if(!client){
+            client=createPhonemizerClient();
+            log("PHASE1","worker batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
+          }
+
+          const pct=(i/chunks.length)*0.35;
+          setStatus(`Phonemisierung ${i+1}/${chunks.length} …`,pct,`${Math.round((i/chunks.length)*100)} %`);
+          const ids=await client.phonemize(chunks[i].text,voice,45000);
+          if(!Array.isArray(ids)||ids.length<4) throw new Error(`Keine Phoneme für Abschnitt ${i+1}`);
+          phonemeBatches[i]=ids;
+
+          if((i+1)%5===0 || (i+1)===chunks.length){
+            client.close();
+            client=null;
+            log("PHASE1","worker batch released",{done:i+1,total:chunks.length});
+            await sleep(500);
+          }
+
+          if((i+1)%25===0 || (i+1)===chunks.length){
+            await jobPut({
+              key:jobKey,done:i+1,total:chunks.length,
+              phonemeBatches,phase:"phoneme",audioDone:0,updatedAt:Date.now()
+            });
+            log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length});
+          }
+
+          if((i+1)%150===0 && (i+1)<chunks.length){
+            if(client){client.close();client=null}
+            await jobPut({
+              key:jobKey,done:i+1,total:chunks.length,
+              phonemeBatches,phase:"phoneme",audioDone:0,updatedAt:Date.now()
+            });
+            localStorage.setItem(RESUME_KEY,jobKey);
+            setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
+            log("CHECKPOINT","controlled reload phoneme",{jobKey,done:i+1,total:chunks.length});
+            await sleep(250);
+            location.reload();
+            return;
+          }
+        }
+      }finally{
+        if(client) client.close();
+      }
+
+      phase="audio";
+      startIndex=chunks.length;
+      audioDone=0;
+      await jobPut({
+        key:jobKey,done:chunks.length,total:chunks.length,
+        phonemeBatches,phase:"audio",audioDone:0,updatedAt:Date.now()
+      });
+      localStorage.setItem(RESUME_KEY,jobKey);
+      log("PHASE1","complete",{chunks:chunks.length});
+    }else{
+      log("CHECKPOINT","resume audio",{jobKey,audioDone,total:chunks.length});
     }
 
-    log("PHASE1","complete",{chunks:chunks.length});
-    localStorage.removeItem(RESUME_KEY);
-    await jobPut({key:jobKey,done:chunks.length,total:chunks.length,phonemeBatches,phase:"audio",updatedAt:Date.now()});
-    setStatus("Phonemisierung fertig. Sprachmodell wird geladen …",.35,"35 %");
-    await sleep(500);
+    // PHASE 2: each chunk becomes an independent MP3 segment in IndexedDB.
+    // This allows a full Safari reload without losing already generated audio.
+    setStatus(
+      audioDone>0 ? `Audio wird fortgesetzt ab ${audioDone+1}/${chunks.length} …` : "Phonemisierung fertig. Sprachmodell wird geladen …",
+      .35+(audioDone/chunks.length)*.64,
+      `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
+    );
 
-    // PHASE 2: ONNX + MP3 only.
     await loadModel();
     if(!session) throw new Error("Sprachmodell konnte für Audio-Phase nicht geladen werden.");
 
-    const sr=config.audio.sample_rate, enc=new window.lamejs.Mp3Encoder(1,sr,96), parts=[];
-    const sPause=Number(els.sentencePause.value),pPause=Number(els.paragraphPause.value),speed=Number(els.speed.value);
+    const sr=config.audio.sample_rate;
+    const sPause=Number(els.sentencePause.value);
+    const pPause=Number(els.paragraphPause.value);
+    const speed=Number(els.speed.value);
 
-    for(let i=0;i<chunks.length;i++){
+    for(let i=audioDone;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
-      const c=chunks[i];
+
+      const chunk=chunks[i];
       const pct=.35+(i/chunks.length)*.64;
       const prefix=`Audio ${i+1}/${chunks.length}`;
       const ids=phonemeBatches[i];
-      if(!Array.isArray(ids)||ids.length<4) throw new Error(`Phoneme für Abschnitt ${i+1} fehlen.`);
-      log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:c.text.length,ids:ids.length});
-      const f32=await synthesizeIds(ids,c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
-      setStatus(`${prefix}: MP3 kodieren …`,pct,`${Math.round(pct*100)} %`);
-      encodePCM(enc,floatToInt16(f32),parts);
-      encodePCM(enc,silence(sr,c.paragraphEnd?pPause:sPause),parts);
-      phonemeBatches[i]=null;
-      log("CHUNK","done",{index:i+1,total:chunks.length,mp3Parts:parts.length});
 
-      if((i+1)%12===0 && (i+1)<chunks.length){
-        setStatus(`${prefix}: ONNX-Speicher wird erneuert …`,pct,`${Math.round(pct*100)} %`);
-        await recycleOnnxSession(`after audio chunk ${i+1}`);
-      }else{
-        await sleep(140);
+      if(!Array.isArray(ids)||ids.length<4){
+        throw new Error(`Phoneme für Abschnitt ${i+1} fehlen.`);
       }
+
+      log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
+      const f32=await synthesizeIds(
+        ids,chunk.text,speed,
+        (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
+      );
+
+      setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
+
+      // Fresh encoder per segment: each segment is independently valid MP3.
+      const enc=new window.lamejs.Mp3Encoder(1,sr,96);
+      const segParts=[];
+      encodePCM(enc,floatToInt16(f32),segParts);
+      encodePCM(enc,silence(sr,chunk.paragraphEnd?pPause:sPause),segParts);
+      const tail=enc.flush();
+      if(tail.length) segParts.push(new Uint8Array(tail));
+
+      let segBytes=0;
+      for(const p of segParts) segBytes+=p.length;
+      const segment=new Uint8Array(segBytes);
+      let segOffset=0;
+      for(const p of segParts){segment.set(p,segOffset);segOffset+=p.length}
+
+      await jobPut({
+        key:`${jobKey}:audio:${i}`,
+        parent:jobKey,
+        index:i,
+        bytes:segment,
+        updatedAt:Date.now()
+      });
+
+      audioDone=i+1;
+      await jobPut({
+        key:jobKey,
+        done:chunks.length,
+        total:chunks.length,
+        phonemeBatches,
+        phase:"audio",
+        audioDone,
+        updatedAt:Date.now()
+      });
+
+      log("CHUNK","segment saved",{index:i+1,total:chunks.length,bytes:segment.length,audioDone});
+
+      // Proactive full reload before Safari reaches the ~10-11 ONNX-run crash point.
+      if(audioDone%8===0 && audioDone<chunks.length){
+        try{
+          await session.release();
+          log("MODEL","session released before controlled audio reload",{audioDone});
+        }catch(err){logError("audio reload release",err)}
+        session=null;
+        loadedModel=null;
+        localStorage.setItem(RESUME_KEY,jobKey);
+        setStatus(
+          `Audio ${audioDone}/${chunks.length} gespeichert – Speicherbereinigung …`,
+          .35+(audioDone/chunks.length)*.64,
+          `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
+        );
+        log("CHECKPOINT","controlled reload audio",{jobKey,audioDone,total:chunks.length});
+        await sleep(300);
+        location.reload();
+        return;
+      }
+
+      await sleep(140);
     }
 
-    setStatus("MP3 wird abgeschlossen …",.995,"99 %");
-    const tail=enc.flush();if(tail.length)parts.push(new Uint8Array(tail));
-    const blob=new Blob(parts,{type:"audio/mpeg"});
+    // FINAL ASSEMBLY: concatenate every persisted MP3 segment in order.
+    setStatus("Alle Audioteile fertig. Eine MP3 wird zusammengesetzt …",.995,"99 %");
+    log("FINAL","assembly start",{segments:chunks.length});
+
+    const finalParts=[];
+    let totalBytes=0;
+    for(let i=0;i<chunks.length;i++){
+      const seg=await jobGet(`${jobKey}:audio:${i}`);
+      if(!seg?.bytes) throw new Error(`Gespeichertes MP3-Segment ${i+1} fehlt.`);
+      const u=seg.bytes instanceof Uint8Array ? seg.bytes : new Uint8Array(seg.bytes);
+      finalParts.push(u);
+      totalBytes+=u.length;
+    }
+
+    const blob=new Blob(finalParts,{type:"audio/mpeg"});
+    log("FINAL","assembly done",{segments:finalParts.length,totalBytes,blobBytes:blob.size});
+
     if(resultUrl)URL.revokeObjectURL(resultUrl);
-    resultUrl=URL.createObjectURL(blob);els.audio.src=resultUrl;els.download.href=resultUrl;
+    resultUrl=URL.createObjectURL(blob);
+    els.audio.src=resultUrl;
+    els.download.href=resultUrl;
     els.download.download=`Mittelalter_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
+
+    // Cleanup persistent job only after the final blob exists.
+    for(let i=0;i<chunks.length;i++){
+      await jobDelete(`${jobKey}:audio:${i}`);
+    }
     await jobDelete(jobKey);
     localStorage.removeItem(RESUME_KEY);
-    setStatus("Fertig. Die komplette MP3 ist bereit.",1,"100 %");
+
+    setStatus("Fertig. Eine komplette MP3 ist bereit.",1,"100 %");
   }catch(err){
     console.error(err);
     logError("GENERATE",err);
