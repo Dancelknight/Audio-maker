@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.6";
+const LOG_VERSION = "0.8";
 const logLines = [];
 function nowISO(){ return new Date().toISOString(); }
 function safeJson(v){
@@ -297,7 +297,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.6",{
+log("BOOT","App loaded v0.8",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -484,7 +484,8 @@ async function preview(){
     setStatus("Test: MP3 wird kodiert …",.8);
     const sr=config.audio.sample_rate, enc=new window.lamejs.Mp3Encoder(1,sr,96), parts=[];
     encodePCM(enc,floatToInt16(f32),parts);
-      log("CHUNK","encoded",{index:i+1,samples:f32.length,parts:parts.length}); const tail=enc.flush(); if(tail.length)parts.push(new Uint8Array(tail));
+    log("PREVIEW","encoded",{samples:f32.length,parts:parts.length});
+    const tail=enc.flush(); if(tail.length)parts.push(new Uint8Array(tail));
     const url=URL.createObjectURL(new Blob(parts,{type:"audio/mpeg"})); const a=new Audio(url);
     a.onended=()=>URL.revokeObjectURL(url); await a.play();
     setStatus("Test erfolgreich. Die Engine funktioniert.",1);
@@ -496,7 +497,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.6 START =====");
+  log("DIAG","===== DIAGNOSE v0.8 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -552,12 +553,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.6 OK =====");
+    log("DIAG","===== DIAGNOSE v0.8 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.6 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.8 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -597,6 +598,7 @@ async function generate(){
     setStatus("Fertig. Die komplette MP3 ist bereit.",1,"100 %");
   }catch(err){
     console.error(err);
+    logError("GENERATE",err);
     setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
   }finally{
     els.generate.disabled=!session||!els.text.value.trim();els.cancel.disabled=true;els.preview.disabled=!session;
