@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.20";
+const LOG_VERSION = "0.21";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -337,7 +337,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.20",{
+log("BOOT","App loaded v0.21",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -703,7 +703,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.20 START =====");
+  log("DIAG","===== DIAGNOSE v0.21 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -759,12 +759,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.20 OK =====");
+    log("DIAG","===== DIAGNOSE v0.21 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.20 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.21 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -951,8 +951,8 @@ async function generate(){
 
       log("CHUNK","segment saved",{index:i+1,total:chunks.length,bytes:segmentBlob.size,audioDone});
 
-      // Proactive full reload before Safari reaches the ~10-11 ONNX-run crash point.
-      if(audioDone%3===0 && audioDone<chunks.length){
+      // iPhone/Safari ultra-safe mode: exactly one audio chunk per page lifecycle.
+      if(audioDone<chunks.length){
         try{
           await session.release();
           log("MODEL","session released before controlled audio reload",{audioDone});
