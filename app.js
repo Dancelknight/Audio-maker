@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.12";
+const LOG_VERSION = "0.13";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.12",{
+log("BOOT","App loaded v0.13",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -458,9 +458,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
   const tRun=performance.now();
   let result;
   try{
-    result=await withTimeout(session.run(feeds,{
-      extra:{memory:{enable_memory_arena_shrinkage:"1"}}
-    }),90000,"ONNX-Audio");
+    result=await withTimeout(session.run(feeds),90000,"ONNX-Audio");
     log("ONNX","run done",{ms:Math.round(performance.now()-tRun),outputs:Object.keys(result||{})});
     const audio=result.output?.data;
     log("ONNX","audio output",{samples:audio?.length||0,sampleRate:config?.audio?.sample_rate});
@@ -580,7 +578,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.12 START =====");
+  log("DIAG","===== DIAGNOSE v0.13 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -636,12 +634,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.12 OK =====");
+    log("DIAG","===== DIAGNOSE v0.13 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.12 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.13 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
