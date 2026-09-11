@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.23";
+const LOG_VERSION = "0.24";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -74,7 +74,7 @@ const els = {
   progress:$("progress"), progressText:$("progressText"), text:$("text"),
   fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"), forgetSavedText:$("forgetSavedText"), saveState:$("saveState"),
   charCount:$("charCount"), sentencePause:$("sentencePause"),
-  paragraphPause:$("paragraphPause"), generate:$("generate"),
+  paragraphPause:$("paragraphPause"), bitrate:$("bitrate"), generate:$("generate"),
   cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog")
 };
 
@@ -268,7 +268,8 @@ const STORAGE = {
   model: "gnr:model:v1",
   speed: "gnr:speed:v1",
   sentencePause: "gnr:sentencePause:v1",
-  paragraphPause: "gnr:paragraphPause:v1"
+  paragraphPause: "gnr:paragraphPause:v1",
+  bitrate: "gnr:bitrate:v1"
 };
 
 function storageSet(key, value){
@@ -325,6 +326,10 @@ function restorePersistentState(){
   if(savedSentencePause) els.sentencePause.value=savedSentencePause;
   const savedParagraphPause = storageGet(STORAGE.paragraphPause,"");
   if(savedParagraphPause) els.paragraphPause.value=savedParagraphPause;
+  const savedBitrate = storageGet(STORAGE.bitrate,"");
+  if(savedBitrate && els.bitrate && [...els.bitrate.options].some(o=>o.value===savedBitrate)){
+    els.bitrate.value=savedBitrate;
+  }
 
   if(els.saveState){
     els.saveState.textContent = savedText
@@ -348,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.23",{
+log("BOOT","App loaded v0.24",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -438,8 +443,13 @@ async function jobPutAudioBlob(key,parent,index,blob){
     });
   }finally{db.close()}
 }
-async function makeJobKey(text,chunks){
+async function makeLegacyJobKey(text,chunks){
   const data=new TextEncoder().encode(text+"|"+chunks.length+"|"+els.modelSelect.value+"|"+els.speed.value);
+  const digest=await crypto.subtle.digest("SHA-256",data);
+  return "job:"+Array.from(new Uint8Array(digest)).slice(0,12).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function makeJobKey(text,chunks,bitrate){
+  const data=new TextEncoder().encode(text+"|"+chunks.length+"|"+els.modelSelect.value+"|"+els.speed.value+"|"+bitrate);
   const digest=await crypto.subtle.digest("SHA-256",data);
   return "job:"+Array.from(new Uint8Array(digest)).slice(0,12).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
@@ -714,7 +724,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.23 START =====");
+  log("DIAG","===== DIAGNOSE v0.24 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -770,12 +780,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.23 OK =====");
+    log("DIAG","===== DIAGNOSE v0.24 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.23 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.24 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -803,14 +813,32 @@ async function generate(){
     cancelRequested=false;
     els.generate.disabled=true;
     els.cancel.disabled=false;
+    if(els.bitrate) els.bitrate.disabled=true;
     els.preview.disabled=true;
     els.result.classList.add("hidden");
 
     const chunks=makeChunks(txt);
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
-    jobKey=await makeJobKey(txt,chunks);
 
-    let checkpoint=await jobGet(jobKey);
+    const selectedBitrate=Number(els.bitrate?.value||40);
+    const legacyKey=await makeLegacyJobKey(txt,chunks);
+    const newKey=await makeJobKey(txt,chunks,selectedBitrate);
+    const resumeKey=localStorage.getItem(RESUME_KEY);
+
+    let checkpoint=null;
+    if(resumeKey && (resumeKey===legacyKey || resumeKey===newKey)){
+      checkpoint=await jobGet(resumeKey);
+      if(checkpoint) jobKey=resumeKey;
+    }
+    if(!jobKey){
+      jobKey=newKey;
+      checkpoint=await jobGet(jobKey);
+    }
+
+    // Jobs created before v0.24 were always encoded at 96 kbps.
+    // Never change their bitrate mid-job.
+    const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
+
     let phonemeBatches=checkpoint?.phonemeBatches || new Array(chunks.length);
     let phase=checkpoint?.phase || "phoneme";
     let startIndex=Number(checkpoint?.done||0);
@@ -830,7 +858,7 @@ async function generate(){
       sentencePause:Number(els.sentencePause.value),
       paragraphPause:Number(els.paragraphPause.value),
       mode:"resumable-segmented-mp3",
-      phase,startIndex,audioDone,jobKey
+      phase,startIndex,audioDone,bitrateKbps:mp3Bitrate,jobKey
     });
 
     const voice="de";
@@ -868,7 +896,7 @@ async function generate(){
           if((i+1)%25===0 || (i+1)===chunks.length){
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phonemeBatches,phase:"phoneme",audioDone:0,updatedAt:Date.now()
+              phonemeBatches,phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
             });
             log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length});
           }
@@ -877,7 +905,7 @@ async function generate(){
             if(client){client.close();client=null}
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phonemeBatches,phase:"phoneme",audioDone:0,updatedAt:Date.now()
+              phonemeBatches,phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
             });
             localStorage.setItem(RESUME_KEY,jobKey);
             setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
@@ -896,7 +924,7 @@ async function generate(){
       audioDone=0;
       await jobPut({
         key:jobKey,done:chunks.length,total:chunks.length,
-        phonemeBatches,phase:"audio",audioDone:0,updatedAt:Date.now()
+        phonemeBatches,phase:"audio",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
       });
       localStorage.setItem(RESUME_KEY,jobKey);
       log("PHASE1","complete",{chunks:chunks.length});
@@ -943,7 +971,7 @@ async function generate(){
       setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
 
       // Fresh encoder per segment. Avoid merging all encoded frames into another large Uint8Array.
-      const enc=new window.lamejs.Mp3Encoder(1,sr,96);
+      const enc=new window.lamejs.Mp3Encoder(1,sr,mp3Bitrate);
       const segParts=[];
       const pcm=floatToInt16(f32);
       encodePCM(enc,pcm,segParts);
@@ -968,6 +996,7 @@ async function generate(){
         phonemeBatches,
         phase:"audio",
         audioDone,
+        bitrate:mp3Bitrate,
         updatedAt:Date.now()
       });
 
@@ -1049,6 +1078,7 @@ async function generate(){
     els.generate.disabled=!els.text.value.trim();
     els.cancel.disabled=true;
     els.preview.disabled=!session;
+    if(els.bitrate) els.bitrate.disabled=false;
   }
 }
 
@@ -1098,6 +1128,7 @@ els.modelSelect.addEventListener("change",()=>{
 
 els.sentencePause.addEventListener("change",()=>storageSet(STORAGE.sentencePause,els.sentencePause.value));
 els.paragraphPause.addEventListener("change",()=>storageSet(STORAGE.paragraphPause,els.paragraphPause.value));
+els.bitrate?.addEventListener("change",()=>storageSet(STORAGE.bitrate,els.bitrate.value));
 
 els.fileInput.addEventListener("change",async e=>{
   const f=e.target.files?.[0];
