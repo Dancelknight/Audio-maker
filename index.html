@@ -13,7 +13,7 @@
   <main class="shell">
     <header>
       <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.2</small></h1>
+      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.3</small></h1>
       <p class="lede">Liest lange deutsche Texte mit Piper/Thorsten direkt im Browser vor und erzeugt eine zusammenhängende MP3.</p>
     </header>
 
@@ -99,6 +99,20 @@
         Für lange Skripte auf dem iPhone: Safari im Vordergrund lassen und das Display während der Berechnung nicht sperren. v0.2 zeigt während jedes Abschnitts separat Phonemisierung und Audio-Berechnung an; dadurch sieht man sofort, ob Safari wirklich hängt.
         Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert.
       </p>
+    </section>
+
+
+    <section class="card">
+      <div class="sectionTitle">
+        <h2>Debug Log</h2>
+        <span>zum Kopieren an ChatGPT</span>
+      </div>
+      <div class="buttonRow compact">
+        <button id="copyLog">Log kopieren</button>
+        <button id="clearLog">Log leeren</button>
+      </div>
+      <textarea id="debugLog" readonly spellcheck="false" style="min-height:260px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <p class="hint">Wenn etwas hängt oder fehlschlägt: erst <strong>Diagnose</strong> starten, dann <strong>Log kopieren</strong> und mir den kompletten Inhalt schicken.</p>
     </section>
 
     <details class="card">

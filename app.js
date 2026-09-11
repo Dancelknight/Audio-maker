@@ -1,6 +1,39 @@
 import { phonemize } from "https://cdn.jsdelivr.net/npm/phonemizer@1.2.1";
 
 const $ = (id) => document.getElementById(id);
+
+const LOG_VERSION = "0.3";
+const logLines = [];
+function nowISO(){ return new Date().toISOString(); }
+function safeJson(v){
+  try { return JSON.stringify(v); } catch(_) { return String(v); }
+}
+function log(type, message, data){
+  const line = `[${nowISO()}] [${type}] ${message}` + (data !== undefined ? ` | ${typeof data === "string" ? data : safeJson(data)}` : "");
+  logLines.push(line);
+  if(logLines.length > 2000) logLines.shift();
+  const box = document.getElementById("debugLog");
+  if(box){ box.value = logLines.join("\n"); box.scrollTop = box.scrollHeight; }
+  try { console.log(line); } catch(_) {}
+}
+function logError(scope, err){
+  log("ERROR", scope, {
+    name: err?.name || null,
+    message: err?.message || String(err),
+    stack: err?.stack || null
+  });
+}
+
+window.addEventListener("error", e => {
+  log("WINDOW_ERROR", e.message || "unknown", {
+    filename:e.filename, lineno:e.lineno, colno:e.colno,
+    error:e.error?.message || null
+  });
+});
+window.addEventListener("unhandledrejection", e => {
+  logError("UNHANDLED_REJECTION", e.reason);
+});
+
 const els = {
   modelSelect:$("modelSelect"), speed:$("speed"), speedOut:$("speedOut"),
   loadModel:$("loadModel"), preview:$("preview"), diagnose:$("diagnose"), status:$("status"),
@@ -8,7 +41,7 @@ const els = {
   fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"),
   charCount:$("charCount"), sentencePause:$("sentencePause"),
   paragraphPause:$("paragraphPause"), generate:$("generate"),
-  cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download")
+  cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog")
 };
 
 const MODELS = {
@@ -29,10 +62,31 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
+log("BOOT","App loaded",{
+  version:LOG_VERSION,
+  href:location.href,
+  userAgent:navigator.userAgent,
+  platform:navigator.platform,
+  language:navigator.language,
+  languages:navigator.languages,
+  online:navigator.onLine,
+  deviceMemory:navigator.deviceMemory || null,
+  hardwareConcurrency:navigator.hardwareConcurrency || null,
+  crossOriginIsolated:window.crossOriginIsolated,
+  hasCaches:"caches" in window,
+  hasIndexedDB:"indexedDB" in window,
+  hasWebAssembly:"WebAssembly" in window,
+  hasBigInt64Array:"BigInt64Array" in window,
+  hasAudioContext:!!(window.AudioContext || window.webkitAudioContext),
+  ortVersion:window.ort?.version || "unknown"
+});
+
+
 function setStatus(msg, progress=null, right=""){
   els.status.textContent=msg;
   if(progress!==null) els.progress.value=Math.max(0,Math.min(1,progress));
   els.progressText.textContent=right;
+  log("STATUS",msg,{progress,right});
 }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function withTimeout(promise, ms, label){
@@ -43,18 +97,37 @@ function withTimeout(promise, ms, label){
   ]);
 }
 async function cachedFetch(url){
-  if(!("caches" in window)) return fetch(url);
-  const cache=await caches.open("german-neural-reader-v02");
-  let r=await cache.match(url);
-  if(r) return r.clone();
-  r=await fetch(url,{mode:"cors",cache:"force-cache"});
-  if(!r.ok) throw new Error(`Download failed (${r.status})`);
-  try{await cache.put(url,r.clone())}catch(_){}
-  return r;
+  const t0=performance.now();
+  log("FETCH","start",{url});
+  try{
+    if(!("caches" in window)){
+      const r=await fetch(url);
+      log("FETCH","network done",{url,status:r.status,ms:Math.round(performance.now()-t0),contentLength:r.headers.get("content-length")});
+      return r;
+    }
+    const cache=await caches.open("german-neural-reader-v03");
+    let r=await cache.match(url);
+    if(r){
+      log("FETCH","cache hit",{url,ms:Math.round(performance.now()-t0),contentLength:r.headers.get("content-length")});
+      return r.clone();
+    }
+    r=await fetch(url,{mode:"cors",cache:"force-cache"});
+    log("FETCH","network response",{url,status:r.status,type:r.type,contentLength:r.headers.get("content-length"),contentType:r.headers.get("content-type"),ms:Math.round(performance.now()-t0)});
+    if(!r.ok) throw new Error(`Download failed (${r.status})`);
+    try{
+      await cache.put(url,r.clone());
+      log("FETCH","cached",{url});
+    }catch(err){ logError("cache.put",err); }
+    return r;
+  }catch(err){
+    logError("cachedFetch",err);
+    throw err;
+  }
 }
 
 async function loadModel(){
   const key=els.modelSelect.value;
+  log("MODEL","load requested",{key});
   if(session && loadedModel===key) return;
   els.loadModel.disabled=true; els.preview.disabled=true; els.generate.disabled=true;
   try{
@@ -62,15 +135,17 @@ async function loadModel(){
     const [modelResp,configResp]=await Promise.all([cachedFetch(MODELS[key].model),cachedFetch(MODELS[key].config)]);
     setStatus("ONNX-Modell wird initialisiert …",.25);
     const [bytes,cfg]=await Promise.all([modelResp.arrayBuffer(),configResp.json()]);
+    log("MODEL","downloaded",{key,modelBytes:bytes.byteLength,configKeys:Object.keys(cfg||{}),sampleRate:cfg?.audio?.sample_rate,phonemeType:cfg?.phoneme_type,espeakVoice:cfg?.espeak?.voice,numSpeakers:cfg?.num_speakers});
     config=cfg;
     session=await withTimeout(window.ort.InferenceSession.create(bytes,{
       executionProviders:["wasm"], graphOptimizationLevel:"all"
     }),120000,"ONNX initialisieren");
     loadedModel=key;
+    log("MODEL","session ready",{key,inputNames:session.inputNames,outputNames:session.outputNames});
     setStatus("Stimme ist bereit. Bitte zuerst „Stimme testen“.",1);
     els.preview.disabled=false; els.generate.disabled=!els.text.value.trim();
   }catch(err){
-    console.error(err); setStatus("Fehler: "+(err?.message||err),0);
+    console.error(err); logError("loadModel",err); setStatus("Fehler: "+(err?.message||err),0);
     session=null;config=null;loadedModel=null;
   }finally{els.loadModel.disabled=false}
 }
@@ -81,18 +156,29 @@ function addId(ids,map,key){
 }
 async function textToIds(text, timeout=45000){
   const voice=config?.espeak?.voice||"de";
-  const out=await withTimeout(phonemize(text,voice),timeout,"Phonemisierung");
+  const t0=performance.now();
+  log("PHONEMIZER","start",{voice,textLength:text.length,preview:text.slice(0,120)});
+  let out;
+  try{
+    out=await withTimeout(phonemize(text,voice),timeout,"Phonemisierung");
+    log("PHONEMIZER","done",{ms:Math.round(performance.now()-t0),type:Array.isArray(out)?"array":typeof out,preview:Array.isArray(out)?String(out[0]).slice(0,160):String(out).slice(0,160)});
+  }catch(err){
+    logError("phonemizer",err);
+    throw err;
+  }
   let p=(Array.isArray(out)?out.join(" "):String(out)).normalize("NFD");
   const ids=[], map=config.phoneme_id_map;
   addId(ids,map,"^"); addId(ids,map,"_");
   for(const ch of Array.from(p)){ addId(ids,map,ch); addId(ids,map,"_"); }
   addId(ids,map,"$");
+  log("PHONEMIZER","ids built",{count:ids.length,phonemeChars:p.length});
   if(ids.length<4) throw new Error("Phonemisierung lieferte keine verwertbaren Phoneme.");
   return ids;
 }
 async function synthesize(text,speed,stageCb=()=>{}){
   stageCb("Phonemisierung …");
   const ids=await textToIds(text);
+  log("ONNX","prepare inputs",{ids:ids.length,textLength:text.length});
   await sleep(0);
   stageCb("Audio-Berechnung …");
   const ort=window.ort;
@@ -102,8 +188,17 @@ async function synthesize(text,speed,stageCb=()=>{}){
     scales:new ort.Tensor("float32",Float32Array.from([0.667,1/speed,0.8]),[3])
   };
   if((config.num_speakers||1)>1) feeds.sid=new ort.Tensor("int64",BigInt64Array.from([0n]),[1]);
-  const result=await withTimeout(session.run(feeds),90000,"ONNX-Audio");
+  const tRun=performance.now();
+  let result;
+  try{
+    result=await withTimeout(session.run(feeds),90000,"ONNX-Audio");
+    log("ONNX","run done",{ms:Math.round(performance.now()-tRun),outputs:Object.keys(result||{})});
+  }catch(err){
+    logError("onnx.run",err);
+    throw err;
+  }
   const audio=result.output?.data;
+  log("ONNX","audio output",{samples:audio?.length||0,sampleRate:config?.audio?.sample_rate});
   if(!audio?.length) throw new Error("Das Modell hat kein Audio ausgegeben.");
   return new Float32Array(audio);
 }
@@ -163,7 +258,8 @@ async function preview(){
     const f32=await synthesize(sample,Number(els.speed.value),(stage)=>setStatus("Test: "+stage,.45));
     setStatus("Test: MP3 wird kodiert …",.8);
     const sr=config.audio.sample_rate, enc=new window.lamejs.Mp3Encoder(1,sr,96), parts=[];
-    encodePCM(enc,floatToInt16(f32),parts); const tail=enc.flush(); if(tail.length)parts.push(new Uint8Array(tail));
+    encodePCM(enc,floatToInt16(f32),parts);
+      log("CHUNK","encoded",{index:i+1,samples:f32.length,parts:parts.length}); const tail=enc.flush(); if(tail.length)parts.push(new Uint8Array(tail));
     const url=URL.createObjectURL(new Blob(parts,{type:"audio/mpeg"})); const a=new Audio(url);
     a.onended=()=>URL.revokeObjectURL(url); await a.play();
     setStatus("Test erfolgreich. Die Engine funktioniert.",1);
@@ -174,18 +270,61 @@ async function preview(){
 
 async function diagnose(){
   els.diagnose.disabled=true;
+  log("DIAG","===== DIAGNOSE START =====");
   try{
-    setStatus("Diagnose 1/3: Phonemizer …",.1);
-    const p=await withTimeout(phonemize("Das ist ein kurzer Test.","de"),45000,"Phonemizer");
-    setStatus("Diagnose 2/3: Sprachmodell …",.4);
-    if(!session)await loadModel();
-    if(!session)throw new Error("Sprachmodell ist nicht geladen.");
-    setStatus("Diagnose 3/3: Test-Inferenz …",.65);
-    const audio=await synthesize("Kurzer Audiotest.",1,()=>{});
+    log("DIAG","environment",{
+      version:LOG_VERSION,
+      href:location.href,
+      userAgent:navigator.userAgent,
+      online:navigator.onLine,
+      visibility:document.visibilityState,
+      crossOriginIsolated:window.crossOriginIsolated,
+      wasm:typeof WebAssembly!=="undefined",
+      bigint64:typeof BigInt64Array!=="undefined",
+      ortPresent:!!window.ort
+    });
+
+    setStatus("Diagnose 1/5: CDN/Phonemizer-Modul …",.08);
+    log("DIAG","phonemizer function",{type:typeof phonemize});
+
+    setStatus("Diagnose 2/5: Phonemizer Mini-Test …",.18);
+    const p0=performance.now();
+    let p;
+    try{
+      p=await withTimeout(phonemize("Test.","de"),15000,"Phonemizer Mini-Test");
+      log("DIAG","phonemizer mini success",{ms:Math.round(performance.now()-p0),result:p});
+    }catch(err){
+      logError("DIAG phonemizer mini",err);
+      throw err;
+    }
+
+    setStatus("Diagnose 3/5: Phonemizer Deutsch-Test …",.30);
+    const p1=performance.now();
+    try{
+      const pde=await withTimeout(phonemize("Die Philosophie des Mittelalters.","de"),30000,"Phonemizer Deutsch-Test");
+      log("DIAG","phonemizer german success",{ms:Math.round(performance.now()-p1),result:pde});
+    }catch(err){
+      logError("DIAG phonemizer german",err);
+      throw err;
+    }
+
+    setStatus("Diagnose 4/5: Sprachmodell …",.48);
+    if(!session) await loadModel();
+    if(!session) throw new Error("Sprachmodell ist nicht geladen.");
+    log("DIAG","model ready",{loadedModel,sampleRate:config?.audio?.sample_rate,espeakVoice:config?.espeak?.voice});
+
+    setStatus("Diagnose 5/5: ONNX-Test-Inferenz …",.68);
+    const audio=await synthesize("Kurzer Audiotest.",1,(stage)=>log("DIAG_STAGE",stage));
     if(!audio.length)throw new Error("Kein Audio.");
-    setStatus("Diagnose OK: Phonemizer + ONNX funktionieren.",1);
+    log("DIAG","audio success",{samples:audio.length,sampleRate:config.audio.sample_rate,durationSec:Number((audio.length/config.audio.sample_rate).toFixed(2))});
+
+    setStatus("Diagnose OK: alle Tests erfolgreich.",1);
+    log("DIAG","===== DIAGNOSE OK =====");
   }catch(err){
-    console.error(err); setStatus("Diagnose-Fehler: "+(err?.message||err),0);
+    console.error(err);
+    logError("DIAG FAIL",err);
+    setStatus("Diagnose-Fehler: "+(err?.message||err),0);
+    log("DIAG","===== DIAGNOSE ENDE MIT FEHLER =====");
   }finally{els.diagnose.disabled=false}
 }
 
@@ -195,6 +334,7 @@ async function generate(){
     if(!session)await loadModel(); if(!session)return;
     cancelRequested=false; els.generate.disabled=true;els.cancel.disabled=false;els.preview.disabled=true;els.result.classList.add("hidden");
     const chunks=makeChunks(txt);
+    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value)});
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
     const sr=config.audio.sample_rate, enc=new window.lamejs.Mp3Encoder(1,sr,96), parts=[];
     const sPause=Number(els.sentencePause.value),pPause=Number(els.paragraphPause.value),speed=Number(els.speed.value);
@@ -202,6 +342,7 @@ async function generate(){
     for(let i=0;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
       const c=chunks[i], pct=i/chunks.length;
+      log("CHUNK","start",{index:i+1,total:chunks.length,textLength:c.text.length,paragraphEnd:c.paragraphEnd,preview:c.text.slice(0,100)});
       const prefix=`Abschnitt ${i+1}/${chunks.length}`;
       const f32=await synthesize(c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
       setStatus(`${prefix}: MP3 kodieren …`,pct,`${Math.round(pct*100)} %`);
@@ -237,5 +378,25 @@ els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disable
 els.text.addEventListener("input",updateTextState);els.clearText.addEventListener("click",()=>{els.text.value="";updateTextState()});
 els.modelSelect.addEventListener("change",()=>{session=null;config=null;loadedModel=null;els.preview.disabled=true;els.generate.disabled=true;setStatus("Anderes Modell gewählt. Bitte neu laden.",0)});
 els.fileInput.addEventListener("change",async e=>{const f=e.target.files?.[0];if(!f)return;els.text.value=await f.text();updateTextState()});
-els.loadBundled.addEventListener("click",async()=>{try{const r=await fetch("./Mittelalter_Vorlesetext.txt");if(!r.ok)throw new Error();els.text.value=await r.text();updateTextState();setStatus("Mittelalter-Text geladen.",els.progress.value)}catch(_){setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0)}});
+els.loadBundled.addEventListener("click",async()=>{try{const r=await fetch("./Mittelalter_Vorlesetext.txt");if(!r.ok)throw new Error();els.text.value=await r.text();
+els.copyLog.addEventListener("click",async()=>{
+  const txt=logLines.join("\n");
+  try{
+    await navigator.clipboard.writeText(txt);
+    setStatus("Debug-Log wurde kopiert.",els.progress.value);
+  }catch(err){
+    logError("clipboard",err);
+    els.debugLog.focus();
+    els.debugLog.select();
+    try{ document.execCommand("copy"); setStatus("Debug-Log wurde kopiert.",els.progress.value); }
+    catch(e){ setStatus("Kopieren fehlgeschlagen – Log manuell markieren.",els.progress.value); }
+  }
+});
+els.clearLog.addEventListener("click",()=>{
+  logLines.length=0;
+  els.debugLog.value="";
+  log("LOG","Log cleared by user");
+});
+
+updateTextState();setStatus("Mittelalter-Text geladen.",els.progress.value)}catch(_){setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0)}});
 updateTextState();

@@ -1,4 +1,4 @@
-# German Neural Reader v0.2 – iPhone/Safari Fix
+# German Neural Reader v0.3 – Debug Build
 
 # German Neural Reader
 
@@ -65,3 +65,20 @@ Siehe `LICENSES.md`.
 ### Update einer bestehenden GitHub-Pages-Installation
 Am einfachsten alle Dateien aus dem ZIP erneut ins Repository hochladen und vorhandene Dateien ersetzen.
 Wichtig sind insbesondere `index.html` und `app.js`.
+
+
+## v0.3 Änderungen
+- ausführliches Debug-Log im Browser
+- Button **Log kopieren**
+- protokolliert Browser-/iPhone-Umgebung
+- protokolliert Modell-Downloads und Cache-Hits
+- protokolliert Phonemizer-Start, Laufzeit und Ergebnis
+- protokolliert ONNX-Eingaben, Laufzeit und Audioausgabe
+- globale JavaScript- und Promise-Fehler werden mit Stacktrace protokolliert
+- Diagnose besteht jetzt aus 5 separaten Tests
+
+Wenn ein Fehler auftritt:
+1. Seite neu laden
+2. `Diagnose` ausführen
+3. `Log kopieren`
+4. kompletten Log-Text an ChatGPT schicken
