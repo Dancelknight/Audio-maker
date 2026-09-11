@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.10";
+const LOG_VERSION = "0.11";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -12,11 +12,19 @@ function nowISO(){ return new Date().toISOString(); }
 function safeJson(v){
   try { return JSON.stringify(v); } catch(_) { return String(v); }
 }
+let persistLogTimer=null;
+function persistLogsSoon(){
+  if(persistLogTimer) return;
+  persistLogTimer=setTimeout(()=>{
+    persistLogTimer=null;
+    try{ localStorage.setItem(PERSISTENT_LOG_KEY, JSON.stringify(logLines.slice(-120))); }catch(_){}
+  },1200);
+}
 function log(type, message, data){
   const line = `[${nowISO()}] [${type}] ${message}` + (data !== undefined ? ` | ${typeof data === "string" ? data : safeJson(data)}` : "");
   logLines.push(line);
-  if(logLines.length > 2000) logLines.shift();
-  try{ localStorage.setItem(PERSISTENT_LOG_KEY, JSON.stringify(logLines.slice(-500))); }catch(_){} 
+  if(logLines.length > 1200) logLines.shift();
+  persistLogsSoon();
   const box = document.getElementById("debugLog");
   if(box){ box.value = logLines.join("\n"); box.scrollTop = box.scrollHeight; }
   try { console.log(line); } catch(_) {}
@@ -144,19 +152,23 @@ async function initPiperPhonemizer(){
     noInitialRun:true,
     noExitRuntime:true,
     print:(line)=>{
-      log("PHONEMIZER_STDOUT","line",line);
       if(phonemizerPending){
         try{
           const parsed=JSON.parse(line);
           if(Array.isArray(parsed?.phoneme_ids)){
+            log("PHONEMIZER_STDOUT","parsed",{
+              idCount:parsed.phoneme_ids.length,
+              phonemeCount:parsed.phonemes?.length||0,
+              processedText:parsed.processed_text?.slice(0,140)||null
+            });
             const pending=phonemizerPending;
             phonemizerPending=null;
             pending.resolve(parsed);
+            return;
           }
-        }catch(err){
-          log("PHONEMIZER_STDOUT","non-json",line);
-        }
+        }catch(err){}
       }
+      log("PHONEMIZER_STDOUT","line",String(line).slice(0,240));
     },
     printErr:(line)=>{
       log("PHONEMIZER_STDERR","line",line);
@@ -174,7 +186,9 @@ async function initPiperPhonemizer(){
       return resolved;
     },
     monitorRunDependencies:(left)=>{
-      log("PHONEMIZER","run dependencies",{left});
+      if(left===0 || left<=10 || left%50===0){
+        log("PHONEMIZER","run dependencies",{left});
+      }
     }
   }),90000,"Piper-WASM Initialisierung");
 
@@ -322,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.10",{
+log("BOOT","App loaded v0.11",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -399,7 +413,10 @@ async function loadModel(){
     log("MODEL","downloaded",{key,modelBytes:bytes.byteLength,configKeys:Object.keys(cfg||{}),sampleRate:cfg?.audio?.sample_rate,phonemeType:cfg?.phoneme_type,espeakVoice:cfg?.espeak?.voice,numSpeakers:cfg?.num_speakers});
     config=cfg;
     session=await withTimeout(window.ort.InferenceSession.create(bytes,{
-      executionProviders:["wasm"], graphOptimizationLevel:"all"
+      executionProviders:["wasm"],
+      graphOptimizationLevel:"all",
+      enableCpuMemArena:false,
+      enableMemPattern:false
     }),120000,"ONNX initialisieren");
     loadedModel=key;
     log("MODEL","session ready",{key,inputNames:session.inputNames,outputNames:session.outputNames});
@@ -499,10 +516,21 @@ function floatToInt16(f32){
   return out;
 }
 function encodePCM(enc,pcm,parts){
-  const block=1152;
+  const block=1152, frames=[];
+  let total=0;
   for(let i=0;i<pcm.length;i+=block){
     const b=enc.encodeBuffer(pcm.subarray(i,Math.min(i+block,pcm.length)));
-    if(b.length)parts.push(new Uint8Array(b));
+    if(b.length){
+      const u=new Uint8Array(b);
+      frames.push(u);
+      total+=u.length;
+    }
+  }
+  if(total){
+    const merged=new Uint8Array(total);
+    let off=0;
+    for(const f of frames){ merged.set(f,off); off+=f.length; }
+    parts.push(merged);
   }
 }
 function silence(sr,ms){return new Int16Array(Math.floor(sr*ms/1000))}
@@ -530,7 +558,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.10 START =====");
+  log("DIAG","===== DIAGNOSE v0.11 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -586,12 +614,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.10 OK =====");
+    log("DIAG","===== DIAGNOSE v0.11 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.10 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.11 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -618,8 +646,9 @@ async function generate(){
       setStatus(`${prefix}: MP3 kodieren …`,pct,`${Math.round(pct*100)} %`);
       encodePCM(enc,floatToInt16(f32),parts);
       encodePCM(enc,silence(sr,c.paragraphEnd?pPause:sPause),parts);
-      // Give Mobile Safari time to service UI/events and release temporaries.
-      await sleep(25);
+      log("CHUNK","done",{index:i+1,total:chunks.length,mp3Parts:parts.length});
+      // Give Mobile Safari a real idle window for GC/UI between heavy WASM runs.
+      await sleep(180);
     }
     setStatus("MP3 wird abgeschlossen …",.995,"99 %");
     const tail=enc.flush();if(tail.length)parts.push(new Uint8Array(tail));
