@@ -13,7 +13,7 @@
   <main class="shell">
     <header>
       <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.4</small></h1>
+      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.5</small></h1>
       <p class="lede">Liest lange deutsche Texte mit Piper/Thorsten direkt im Browser vor und erzeugt eine zusammenhängende MP3.</p>
     </header>
 
@@ -60,11 +60,11 @@
         </label>
         <button id="loadBundled">Mittelalter-Text laden</button>
         <button id="clearText">Leeren</button>
-        <button id="forgetSavedText">Gespeicherten Text vergessen</button>
+        <button id="forgetSavedText">Gespeicherten Text löschen</button>
       </div>
 
       <textarea id="text" spellcheck="false" placeholder="Text hier einfügen oder TXT-Datei auswählen …"></textarea>
-      <p class="hint">Der Text wird automatisch lokal auf diesem Gerät gespeichert und nach einem Neuladen wiederhergestellt.</p>
+      <p id="saveState" class="hint">Text wird automatisch lokal gespeichert.</p>
     </section>
 
     <section class="card">
@@ -106,15 +106,15 @@
 
     <section class="card">
       <div class="sectionTitle">
-        <h2>Debug Log</h2>
-        <span>zum Kopieren an ChatGPT</span>
+        <h2>Diagnose-Log</h2>
+        <span>wird nach Diagnose automatisch angezeigt</span>
       </div>
       <div class="buttonRow compact">
-        <button id="copyLog">Log kopieren</button>
+        <button id="copyLog" class="primary">Kompletten Log kopieren</button>
         <button id="clearLog">Log leeren</button>
       </div>
-      <textarea id="debugLog" readonly spellcheck="false" style="min-height:260px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
-      <p class="hint">Wenn etwas hängt oder fehlschlägt: erst <strong>Diagnose</strong> starten, dann <strong>Log kopieren</strong> und mir den kompletten Inhalt schicken.</p>
+      <textarea id="debugLog" readonly spellcheck="false" style="min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
+      <p class="hint">Nach <strong>Diagnose</strong> springt die Seite automatisch hierher. Dann auf <strong>Kompletten Log kopieren</strong> tippen und mir den Inhalt schicken.</p>
     </section>
 
     <details class="card">

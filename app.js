@@ -38,7 +38,7 @@ const els = {
   modelSelect:$("modelSelect"), speed:$("speed"), speedOut:$("speedOut"),
   loadModel:$("loadModel"), preview:$("preview"), diagnose:$("diagnose"), status:$("status"),
   progress:$("progress"), progressText:$("progressText"), text:$("text"),
-  fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"), forgetSavedText:$("forgetSavedText"),
+  fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"), forgetSavedText:$("forgetSavedText"), saveState:$("saveState"),
   charCount:$("charCount"), sentencePause:$("sentencePause"),
   paragraphPause:$("paragraphPause"), generate:$("generate"),
   cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog")
@@ -58,48 +58,78 @@ const MODELS = {
 let session=null, config=null, loadedModel=null, cancelRequested=false, resultUrl=null;
 let lastStageStarted=0;
 
-const STORAGE_KEY_TEXT = "german-neural-reader:text:v1";
-const STORAGE_KEY_MODEL = "german-neural-reader:model:v1";
-const STORAGE_KEY_SPEED = "german-neural-reader:speed:v1";
-const STORAGE_KEY_SENTENCE_PAUSE = "german-neural-reader:sentencePause:v1";
-const STORAGE_KEY_PARAGRAPH_PAUSE = "german-neural-reader:paragraphPause:v1";
+const STORAGE = {
+  text: "gnr:text:v1",
+  model: "gnr:model:v1",
+  speed: "gnr:speed:v1",
+  sentencePause: "gnr:sentencePause:v1",
+  paragraphPause: "gnr:paragraphPause:v1"
+};
 
-function saveSetting(key, value){
-  try { localStorage.setItem(key, String(value)); }
-  catch(err){ logError("localStorage.setItem", err); }
+function storageSet(key, value){
+  try{
+    localStorage.setItem(key, String(value));
+    return true;
+  }catch(err){
+    logError("storageSet", err);
+    return false;
+  }
 }
-function loadSetting(key, fallback=null){
-  try {
+function storageGet(key, fallback=""){
+  try{
     const v = localStorage.getItem(key);
     return v === null ? fallback : v;
-  } catch(err){
-    logError("localStorage.getItem", err);
+  }catch(err){
+    logError("storageGet", err);
     return fallback;
   }
 }
-function saveTextLocally(){
-  try{
-    localStorage.setItem(STORAGE_KEY_TEXT, els.text.value);
-    log("STORAGE","text saved",{chars:els.text.value.length});
-  }catch(err){
-    logError("saveTextLocally",err);
-    setStatus("Hinweis: Text konnte nicht lokal gespeichert werden.", els.progress.value);
+function persistText(reason="change"){
+  const ok = storageSet(STORAGE.text, els.text.value);
+  if(els.saveState){
+    els.saveState.textContent = ok
+      ? `Lokal gespeichert · ${els.text.value.length.toLocaleString("de-DE")} Zeichen`
+      : "Lokales Speichern fehlgeschlagen.";
   }
+  log("STORAGE","text persisted",{reason,chars:els.text.value.length,ok});
 }
-function restoreSavedState(){
-  const savedText = loadSetting(STORAGE_KEY_TEXT, "");
+function restorePersistentState(){
+  const savedText = storageGet(STORAGE.text,"");
   if(savedText){
     els.text.value = savedText;
     log("STORAGE","text restored",{chars:savedText.length});
   }
-  const model = loadSetting(STORAGE_KEY_MODEL, null);
-  if(model && [...els.modelSelect.options].some(o=>o.value===model)) els.modelSelect.value=model;
-  const speed = loadSetting(STORAGE_KEY_SPEED, null);
-  if(speed){ els.speed.value=speed; els.speedOut.value=`${Number(speed).toFixed(2)}×`; }
-  const sp = loadSetting(STORAGE_KEY_SENTENCE_PAUSE, null);
-  if(sp) els.sentencePause.value=sp;
-  const pp = loadSetting(STORAGE_KEY_PARAGRAPH_PAUSE, null);
-  if(pp) els.paragraphPause.value=pp;
+
+  const savedModel = storageGet(STORAGE.model,"");
+  if(savedModel && [...els.modelSelect.options].some(o=>o.value===savedModel)){
+    els.modelSelect.value=savedModel;
+  }
+  const savedSpeed = storageGet(STORAGE.speed,"");
+  if(savedSpeed){
+    els.speed.value=savedSpeed;
+    els.speedOut.value=`${Number(savedSpeed).toFixed(2)}×`;
+  }
+  const savedSentencePause = storageGet(STORAGE.sentencePause,"");
+  if(savedSentencePause) els.sentencePause.value=savedSentencePause;
+  const savedParagraphPause = storageGet(STORAGE.paragraphPause,"");
+  if(savedParagraphPause) els.paragraphPause.value=savedParagraphPause;
+
+  if(els.saveState){
+    els.saveState.textContent = savedText
+      ? `Wiederhergestellt · ${savedText.length.toLocaleString("de-DE")} Zeichen`
+      : "Text wird automatisch lokal gespeichert.";
+  }
+}
+
+function showDebugLog(){
+  requestAnimationFrame(()=>{
+    els.debugLog?.scrollIntoView({behavior:"smooth",block:"start"});
+    setTimeout(()=>{
+      if(els.debugLog){
+        els.debugLog.scrollTop = els.debugLog.scrollHeight;
+      }
+    },450);
+  });
 }
 
 window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
@@ -170,6 +200,7 @@ async function cachedFetch(url){
 }
 
 async function loadModel(){
+  persistText("before-loadModel");
   const key=els.modelSelect.value;
   log("MODEL","load requested",{key});
   if(session && loadedModel===key) return;
@@ -295,6 +326,7 @@ function encodePCM(enc,pcm,parts){
 function silence(sr,ms){return new Int16Array(Math.floor(sr*ms/1000))}
 
 async function preview(){
+  persistText("before-preview");
   try{
     if(!session)await loadModel(); if(!session)return;
     els.preview.disabled=true;
@@ -313,6 +345,7 @@ async function preview(){
 }
 
 async function diagnose(){
+  persistText("before-diagnose");
   els.diagnose.disabled=true;
   log("DIAG","===== DIAGNOSE START =====");
   try{
@@ -369,7 +402,10 @@ async function diagnose(){
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
     log("DIAG","===== DIAGNOSE ENDE MIT FEHLER =====");
-  }finally{els.diagnose.disabled=false}
+  }finally{
+    els.diagnose.disabled=false;
+    showDebugLog();
+  }
 }
 
 async function generate(){
@@ -411,57 +447,112 @@ async function generate(){
   }
 }
 
-let saveTimer=null;
-function updateTextState(){
+let textSaveTimer=null;
+function updateTextState({save=true, reason="edit"}={}){
   els.charCount.textContent=`${els.text.value.length.toLocaleString("de-DE")} Zeichen`;
   els.generate.disabled=!session||!els.text.value.trim();
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(saveTextLocally,250);
+  if(save){
+    clearTimeout(textSaveTimer);
+    textSaveTimer=setTimeout(()=>persistText(reason),120);
+  }
 }
 els.speed.addEventListener("input",()=>{
   els.speedOut.value=`${Number(els.speed.value).toFixed(2)}×`;
-  saveSetting(STORAGE_KEY_SPEED, els.speed.value);
+  storageSet(STORAGE.speed, els.speed.value);
 });
-els.loadModel.addEventListener("click",loadModel);els.preview.addEventListener("click",preview);
-els.diagnose.addEventListener("click",diagnose);els.generate.addEventListener("click",generate);
+
+els.loadModel.addEventListener("click",loadModel);
+els.preview.addEventListener("click",preview);
+els.diagnose.addEventListener("click",diagnose);
+els.generate.addEventListener("click",generate);
 els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disabled=true});
-els.text.addEventListener("input",updateTextState);els.clearText.addEventListener("click",()=>{els.text.value="";updateTextState()});
-els.modelSelect.addEventListener("change",()=>{
-  saveSetting(STORAGE_KEY_MODEL, els.modelSelect.value);
-  session=null;config=null;loadedModel=null;els.preview.disabled=true;els.generate.disabled=true;
-  setStatus("Anderes Modell gewählt. Bitte neu laden.",0)
-});
 
-els.sentencePause.addEventListener("change",()=>saveSetting(STORAGE_KEY_SENTENCE_PAUSE, els.sentencePause.value));
-els.paragraphPause.addEventListener("change",()=>saveSetting(STORAGE_KEY_PARAGRAPH_PAUSE, els.paragraphPause.value));
-els.forgetSavedText.addEventListener("click",()=>{
-  try{ localStorage.removeItem(STORAGE_KEY_TEXT); }catch(err){ logError("remove saved text",err); }
+els.text.addEventListener("input",()=>updateTextState({save:true,reason:"typing"}));
+
+els.clearText.addEventListener("click",()=>{
   els.text.value="";
-  restoreSavedState();
-updateTextState();
-  setStatus("Gespeicherter Text wurde entfernt.", els.progress.value);
+  persistText("clear");
+  updateTextState({save:false});
 });
 
-els.fileInput.addEventListener("change",async e=>{const f=e.target.files?.[0];if(!f)return;els.text.value=await f.text();updateTextState()});
-els.loadBundled.addEventListener("click",async()=>{try{const r=await fetch("./Mittelalter_Vorlesetext.txt");if(!r.ok)throw new Error();els.text.value=await r.text();
+els.forgetSavedText.addEventListener("click",()=>{
+  try{localStorage.removeItem(STORAGE.text)}catch(err){logError("remove saved text",err)}
+  els.text.value="";
+  updateTextState({save:false});
+  if(els.saveState) els.saveState.textContent="Gespeicherter Text wurde gelöscht.";
+  setStatus("Gespeicherter Text wurde gelöscht.",els.progress.value);
+});
+
+els.modelSelect.addEventListener("change",()=>{
+  persistText("before-model-change");
+  storageSet(STORAGE.model,els.modelSelect.value);
+  session=null;config=null;loadedModel=null;
+  els.preview.disabled=true;els.generate.disabled=true;
+  setStatus("Anderes Modell gewählt. Bitte neu laden.",0);
+});
+
+els.sentencePause.addEventListener("change",()=>storageSet(STORAGE.sentencePause,els.sentencePause.value));
+els.paragraphPause.addEventListener("change",()=>storageSet(STORAGE.paragraphPause,els.paragraphPause.value));
+
+els.fileInput.addEventListener("change",async e=>{
+  const f=e.target.files?.[0];
+  if(!f)return;
+  try{
+    const txt=await f.text();
+    els.text.value=txt;
+    persistText("file-upload");
+    updateTextState({save:false});
+    setStatus(`TXT geladen und gespeichert: ${f.name}`,els.progress.value);
+    log("TEXT","file uploaded",{name:f.name,size:f.size,chars:txt.length,type:f.type});
+  }catch(err){
+    logError("file upload",err);
+    setStatus("TXT konnte nicht geladen werden: "+(err?.message||err),0);
+  }finally{
+    // iOS: allow selecting the same file again later.
+    e.target.value="";
+  }
+});
+
+els.loadBundled.addEventListener("click",async()=>{
+  try{
+    const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const txt=await r.text();
+    els.text.value=txt;
+    persistText("bundled-text");
+    updateTextState({save:false});
+    setStatus("Mittelalter-Text geladen und gespeichert.",els.progress.value);
+    log("TEXT","bundled text loaded",{chars:txt.length});
+  }catch(err){
+    logError("bundled text",err);
+    setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0);
+  }
+});
+
 els.copyLog.addEventListener("click",async()=>{
   const txt=logLines.join("\n");
   try{
     await navigator.clipboard.writeText(txt);
-    setStatus("Debug-Log wurde kopiert.",els.progress.value);
+    setStatus("Kompletter Diagnose-Log wurde kopiert.",els.progress.value);
+    log("LOG","copied",{lines:logLines.length,chars:txt.length});
   }catch(err){
     logError("clipboard",err);
     els.debugLog.focus();
     els.debugLog.select();
-    try{ document.execCommand("copy"); setStatus("Debug-Log wurde kopiert.",els.progress.value); }
-    catch(e){ setStatus("Kopieren fehlgeschlagen – Log manuell markieren.",els.progress.value); }
+    try{
+      document.execCommand("copy");
+      setStatus("Kompletter Diagnose-Log wurde kopiert.",els.progress.value);
+    }catch(e){
+      setStatus("Kopieren fehlgeschlagen – Log ist markiert, bitte manuell kopieren.",els.progress.value);
+    }
   }
 });
+
 els.clearLog.addEventListener("click",()=>{
   logLines.length=0;
   els.debugLog.value="";
   log("LOG","Log cleared by user");
 });
 
-updateTextState();setStatus("Mittelalter-Text geladen.",els.progress.value)}catch(_){setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0)}});
-updateTextState();
+restorePersistentState();
+updateTextState({save:false});

@@ -1,4 +1,4 @@
-# German Neural Reader v0.4 – Persistent Text + Debug
+# German Neural Reader v0.5 – Persistent Text + Auto Diagnose Log
 
 # German Neural Reader
 
@@ -84,11 +84,10 @@ Wenn ein Fehler auftritt:
 4. kompletten Log-Text an ChatGPT schicken
 
 
-## v0.4 Änderungen
-- Text wird automatisch in `localStorage` gespeichert
-- nach Reload / Sprachmodell-Laden bleibt der Text erhalten
-- Modellwahl, Tempo und Pauseneinstellungen werden ebenfalls lokal gespeichert
-- Button **Gespeicherten Text vergessen**
-- Debug-Funktionen aus v0.3 bleiben erhalten
-
-Hinweis: Der Text wird nur lokal im Browser des Geräts gespeichert.
+## v0.5
+- TXT-Uploads werden **sofort** in `localStorage` gespeichert.
+- Vor `Stimme laden`, `Stimme testen`, Modellwechsel und `Diagnose` wird der aktuelle Text nochmals gespeichert.
+- Nach Reload wird der Text automatisch wiederhergestellt.
+- Diagnose scrollt nach Abschluss automatisch zum vollständigen Log.
+- `Kompletten Log kopieren` kopiert den gesamten Diagnoseverlauf.
+- iOS-Dateiauswahl wird nach Upload zurückgesetzt, damit dieselbe TXT später erneut gewählt werden kann.
