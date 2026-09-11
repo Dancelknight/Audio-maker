@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.15";
+const LOG_VERSION = "0.16";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.15",{
+log("BOOT","App loaded v0.16",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -632,7 +632,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.15 START =====");
+  log("DIAG","===== DIAGNOSE v0.16 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -688,12 +688,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.15 OK =====");
+    log("DIAG","===== DIAGNOSE v0.16 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.15 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.16 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -724,20 +724,37 @@ async function generate(){
     await sleep(900);
 
     const phonemeBatches=new Array(chunks.length);
-    const client=createPhonemizerClient();
+    let client=null;
     try{
       for(let i=0;i<chunks.length;i++){
         if(cancelRequested)throw new Error("Abgebrochen");
+
+        // Safari/iOS: piper-wasm accumulates memory across callMain invocations.
+        // Recreate the worker every 5 chunks while ONNX is not loaded.
+        if(!client){
+          client=createPhonemizerClient();
+          log("PHASE1","worker batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
+        }
+
         const pct=(i/chunks.length)*0.35;
         setStatus(`Phonemisierung ${i+1}/${chunks.length} …`,pct,`${Math.round((i/chunks.length)*100)} %`);
         const ids=await client.phonemize(chunks[i].text,voice,45000);
         if(!Array.isArray(ids)||ids.length<4) throw new Error(`Keine Phoneme für Abschnitt ${i+1}`);
         phonemeBatches[i]=ids;
+
+        if((i+1)%5===0 || (i+1)===chunks.length){
+          client.close();
+          client=null;
+          log("PHASE1","worker batch released",{done:i+1,total:chunks.length});
+          await sleep(550);
+        }else{
+          await sleep(12);
+        }
+
         if((i+1)%25===0) log("PHASE1","phonemized",{done:i+1,total:chunks.length});
-        await sleep(8);
       }
     }finally{
-      client.close();
+      if(client) client.close();
     }
 
     log("PHASE1","complete",{chunks:chunks.length});
