@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.9";
+const LOG_VERSION = "0.10";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -322,7 +322,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.9",{
+log("BOOT","App loaded v0.10",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -442,14 +442,22 @@ async function synthesize(text,speed,stageCb=()=>{}){
   try{
     result=await withTimeout(session.run(feeds),90000,"ONNX-Audio");
     log("ONNX","run done",{ms:Math.round(performance.now()-tRun),outputs:Object.keys(result||{})});
+    const audio=result.output?.data;
+    log("ONNX","audio output",{samples:audio?.length||0,sampleRate:config?.audio?.sample_rate});
+    if(!audio?.length) throw new Error("Das Modell hat kein Audio ausgegeben.");
+    return new Float32Array(audio);
   }catch(err){
     logError("onnx.run",err);
     throw err;
+  }finally{
+    try{
+      for(const t of Object.values(feeds)) t?.dispose?.();
+      for(const t of Object.values(result||{})) t?.dispose?.();
+      log("ONNX","tensors disposed");
+    }catch(err){
+      logError("onnx.dispose",err);
+    }
   }
-  const audio=result.output?.data;
-  log("ONNX","audio output",{samples:audio?.length||0,sampleRate:config?.audio?.sample_rate});
-  if(!audio?.length) throw new Error("Das Modell hat kein Audio ausgegeben.");
-  return new Float32Array(audio);
 }
 
 function cleanText(s){
@@ -466,7 +474,7 @@ function splitLongSentence(s,maxLen){
   }
   if(rest)out.push(rest); return out;
 }
-function makeChunks(text,maxLen=180){
+function makeChunks(text,maxLen=110){
   // Smaller chunks are deliberately used on iPhone/Safari to reduce peak memory and long blocking calls.
   const paras=cleanText(text).split(/\n\s*\n/).filter(Boolean), chunks=[];
   for(const paraRaw of paras){
@@ -522,7 +530,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.9 START =====");
+  log("DIAG","===== DIAGNOSE v0.10 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -578,12 +586,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.9 OK =====");
+    log("DIAG","===== DIAGNOSE v0.10 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.9 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.10 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
