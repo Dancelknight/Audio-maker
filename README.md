@@ -1,3 +1,5 @@
+# German Neural Reader v0.2 – iPhone/Safari Fix
+
 # German Neural Reader
 
 Eine kleine statische Web-App für lange deutsche TTS-Aufnahmen im Browser.
@@ -49,3 +51,17 @@ Der eigentliche Skripttext wird von der App nicht an einen TTS-Dienst gesendet.
 ## Lizenzen
 
 Siehe `LICENSES.md`.
+
+
+## v0.2 Änderungen
+- kleinere TTS-Blöcke (ca. 180 Zeichen) für geringeren RAM-Verbrauch
+- Safari-konservative ONNX-Konfiguration (`numThreads = 1`)
+- separate Statusanzeige für **Phonemisierung**, **Audio-Berechnung** und **MP3-Kodierung**
+- 45-s-Timeout für Phonemisierung und 90-s-Timeout pro ONNX-Abschnitt
+- Diagnose-Knopf
+- kurze UI-Pausen zwischen Abschnitten, damit Mobile Safari nicht scheinbar einfriert
+- direkter Phonemizer-CDN-Import statt `+esm`
+
+### Update einer bestehenden GitHub-Pages-Installation
+Am einfachsten alle Dateien aus dem ZIP erneut ins Repository hochladen und vorhandene Dateien ersetzen.
+Wichtig sind insbesondere `index.html` und `app.js`.
