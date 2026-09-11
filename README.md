@@ -1,4 +1,4 @@
-# German Neural Reader v0.3 – Debug Build
+# German Neural Reader v0.4 – Persistent Text + Debug
 
 # German Neural Reader
 
@@ -82,3 +82,13 @@ Wenn ein Fehler auftritt:
 2. `Diagnose` ausführen
 3. `Log kopieren`
 4. kompletten Log-Text an ChatGPT schicken
+
+
+## v0.4 Änderungen
+- Text wird automatisch in `localStorage` gespeichert
+- nach Reload / Sprachmodell-Laden bleibt der Text erhalten
+- Modellwahl, Tempo und Pauseneinstellungen werden ebenfalls lokal gespeichert
+- Button **Gespeicherten Text vergessen**
+- Debug-Funktionen aus v0.3 bleiben erhalten
+
+Hinweis: Der Text wird nur lokal im Browser des Geräts gespeichert.

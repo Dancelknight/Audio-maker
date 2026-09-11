@@ -38,7 +38,7 @@ const els = {
   modelSelect:$("modelSelect"), speed:$("speed"), speedOut:$("speedOut"),
   loadModel:$("loadModel"), preview:$("preview"), diagnose:$("diagnose"), status:$("status"),
   progress:$("progress"), progressText:$("progressText"), text:$("text"),
-  fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"),
+  fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"), forgetSavedText:$("forgetSavedText"),
   charCount:$("charCount"), sentencePause:$("sentencePause"),
   paragraphPause:$("paragraphPause"), generate:$("generate"),
   cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog")
@@ -57,6 +57,50 @@ const MODELS = {
 
 let session=null, config=null, loadedModel=null, cancelRequested=false, resultUrl=null;
 let lastStageStarted=0;
+
+const STORAGE_KEY_TEXT = "german-neural-reader:text:v1";
+const STORAGE_KEY_MODEL = "german-neural-reader:model:v1";
+const STORAGE_KEY_SPEED = "german-neural-reader:speed:v1";
+const STORAGE_KEY_SENTENCE_PAUSE = "german-neural-reader:sentencePause:v1";
+const STORAGE_KEY_PARAGRAPH_PAUSE = "german-neural-reader:paragraphPause:v1";
+
+function saveSetting(key, value){
+  try { localStorage.setItem(key, String(value)); }
+  catch(err){ logError("localStorage.setItem", err); }
+}
+function loadSetting(key, fallback=null){
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v;
+  } catch(err){
+    logError("localStorage.getItem", err);
+    return fallback;
+  }
+}
+function saveTextLocally(){
+  try{
+    localStorage.setItem(STORAGE_KEY_TEXT, els.text.value);
+    log("STORAGE","text saved",{chars:els.text.value.length});
+  }catch(err){
+    logError("saveTextLocally",err);
+    setStatus("Hinweis: Text konnte nicht lokal gespeichert werden.", els.progress.value);
+  }
+}
+function restoreSavedState(){
+  const savedText = loadSetting(STORAGE_KEY_TEXT, "");
+  if(savedText){
+    els.text.value = savedText;
+    log("STORAGE","text restored",{chars:savedText.length});
+  }
+  const model = loadSetting(STORAGE_KEY_MODEL, null);
+  if(model && [...els.modelSelect.options].some(o=>o.value===model)) els.modelSelect.value=model;
+  const speed = loadSetting(STORAGE_KEY_SPEED, null);
+  if(speed){ els.speed.value=speed; els.speedOut.value=`${Number(speed).toFixed(2)}×`; }
+  const sp = loadSetting(STORAGE_KEY_SENTENCE_PAUSE, null);
+  if(sp) els.sentencePause.value=sp;
+  const pp = loadSetting(STORAGE_KEY_PARAGRAPH_PAUSE, null);
+  if(pp) els.paragraphPause.value=pp;
+}
 
 window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
@@ -367,16 +411,37 @@ async function generate(){
   }
 }
 
+let saveTimer=null;
 function updateTextState(){
   els.charCount.textContent=`${els.text.value.length.toLocaleString("de-DE")} Zeichen`;
   els.generate.disabled=!session||!els.text.value.trim();
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(saveTextLocally,250);
 }
-els.speed.addEventListener("input",()=>els.speedOut.value=`${Number(els.speed.value).toFixed(2)}×`);
+els.speed.addEventListener("input",()=>{
+  els.speedOut.value=`${Number(els.speed.value).toFixed(2)}×`;
+  saveSetting(STORAGE_KEY_SPEED, els.speed.value);
+});
 els.loadModel.addEventListener("click",loadModel);els.preview.addEventListener("click",preview);
 els.diagnose.addEventListener("click",diagnose);els.generate.addEventListener("click",generate);
 els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disabled=true});
 els.text.addEventListener("input",updateTextState);els.clearText.addEventListener("click",()=>{els.text.value="";updateTextState()});
-els.modelSelect.addEventListener("change",()=>{session=null;config=null;loadedModel=null;els.preview.disabled=true;els.generate.disabled=true;setStatus("Anderes Modell gewählt. Bitte neu laden.",0)});
+els.modelSelect.addEventListener("change",()=>{
+  saveSetting(STORAGE_KEY_MODEL, els.modelSelect.value);
+  session=null;config=null;loadedModel=null;els.preview.disabled=true;els.generate.disabled=true;
+  setStatus("Anderes Modell gewählt. Bitte neu laden.",0)
+});
+
+els.sentencePause.addEventListener("change",()=>saveSetting(STORAGE_KEY_SENTENCE_PAUSE, els.sentencePause.value));
+els.paragraphPause.addEventListener("change",()=>saveSetting(STORAGE_KEY_PARAGRAPH_PAUSE, els.paragraphPause.value));
+els.forgetSavedText.addEventListener("click",()=>{
+  try{ localStorage.removeItem(STORAGE_KEY_TEXT); }catch(err){ logError("remove saved text",err); }
+  els.text.value="";
+  restoreSavedState();
+updateTextState();
+  setStatus("Gespeicherter Text wurde entfernt.", els.progress.value);
+});
+
 els.fileInput.addEventListener("change",async e=>{const f=e.target.files?.[0];if(!f)return;els.text.value=await f.text();updateTextState()});
 els.loadBundled.addEventListener("click",async()=>{try{const r=await fetch("./Mittelalter_Vorlesetext.txt");if(!r.ok)throw new Error();els.text.value=await r.text();
 els.copyLog.addEventListener("click",async()=>{
