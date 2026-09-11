@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.11";
+const LOG_VERSION = "0.12";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.11",{
+log("BOOT","App loaded v0.12",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -414,9 +414,10 @@ async function loadModel(){
     config=cfg;
     session=await withTimeout(window.ort.InferenceSession.create(bytes,{
       executionProviders:["wasm"],
-      graphOptimizationLevel:"all",
+      graphOptimizationLevel:"basic",
       enableCpuMemArena:false,
-      enableMemPattern:false
+      enableMemPattern:false,
+      extra:{session:{disable_prepacking:"1"}}
     }),120000,"ONNX initialisieren");
     loadedModel=key;
     log("MODEL","session ready",{key,inputNames:session.inputNames,outputNames:session.outputNames});
@@ -457,7 +458,9 @@ async function synthesize(text,speed,stageCb=()=>{}){
   const tRun=performance.now();
   let result;
   try{
-    result=await withTimeout(session.run(feeds),90000,"ONNX-Audio");
+    result=await withTimeout(session.run(feeds,{
+      extra:{memory:{enable_memory_arena_shrinkage:"1"}}
+    }),90000,"ONNX-Audio");
     log("ONNX","run done",{ms:Math.round(performance.now()-tRun),outputs:Object.keys(result||{})});
     const audio=result.output?.data;
     log("ONNX","audio output",{samples:audio?.length||0,sampleRate:config?.audio?.sample_rate});
@@ -535,6 +538,25 @@ function encodePCM(enc,pcm,parts){
 }
 function silence(sr,ms){return new Int16Array(Math.floor(sr*ms/1000))}
 
+async function recycleOnnxSession(reason="periodic"){
+  if(!session) return;
+  const modelKey=loadedModel || els.modelSelect.value;
+  log("MODEL","session recycle start",{reason,modelKey});
+  try{
+    await session.release();
+    log("MODEL","session released",{reason});
+  }catch(err){
+    logError("session.release",err);
+  }
+  session=null;
+  loadedModel=null;
+  // Give WebKit a chance to reclaim WASM/session resources before recreating.
+  await sleep(650);
+  await loadModel();
+  if(!session) throw new Error("ONNX-Session konnte nach Speicherbereinigung nicht neu geladen werden.");
+  log("MODEL","session recycle done",{reason,modelKey});
+}
+
 async function preview(){
   persistText("before-preview");
   try{
@@ -558,7 +580,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.11 START =====");
+  log("DIAG","===== DIAGNOSE v0.12 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -614,12 +636,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.11 OK =====");
+    log("DIAG","===== DIAGNOSE v0.12 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.11 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.12 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -647,8 +669,13 @@ async function generate(){
       encodePCM(enc,floatToInt16(f32),parts);
       encodePCM(enc,silence(sr,c.paragraphEnd?pPause:sPause),parts);
       log("CHUNK","done",{index:i+1,total:chunks.length,mp3Parts:parts.length});
-      // Give Mobile Safari a real idle window for GC/UI between heavy WASM runs.
-      await sleep(180);
+      // iOS Safari: bound cumulative ONNX/WASM memory. Recreate the session every 2 chunks.
+      if((i+1)%2===0 && (i+1)<chunks.length){
+        setStatus(`${prefix}: Speicher wird freigegeben …`,pct,`${Math.round(pct*100)} %`);
+        await recycleOnnxSession(`after chunk ${i+1}`);
+      }else{
+        await sleep(220);
+      }
     }
     setStatus("MP3 wird abgeschlossen …",.995,"99 %");
     const tail=enc.flush();if(tail.length)parts.push(new Uint8Array(tail));
