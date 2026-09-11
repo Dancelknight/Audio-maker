@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.16";
+const LOG_VERSION = "0.17";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.16",{
+log("BOOT","App loaded v0.17",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -363,6 +363,61 @@ function setStatus(msg, progress=null, right=""){
   log("STATUS",msg,{progress,right});
 }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+const JOB_DB_NAME="gnr-jobs-v1";
+const JOB_STORE="jobs";
+const RESUME_KEY="gnr:resume:v1";
+
+function openJobDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(JOB_DB_NAME,1);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(JOB_STORE)) db.createObjectStore(JOB_STORE,{keyPath:"key"});
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error||new Error("IndexedDB konnte nicht geöffnet werden."));
+  });
+}
+async function jobPut(record){
+  const db=await openJobDB();
+  try{
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readwrite");
+      tx.objectStore(JOB_STORE).put(record);
+      tx.oncomplete=()=>resolve();
+      tx.onerror=()=>reject(tx.error||new Error("Checkpoint speichern fehlgeschlagen."));
+      tx.onabort=()=>reject(tx.error||new Error("Checkpoint abgebrochen."));
+    });
+  }finally{db.close()}
+}
+async function jobGet(key){
+  const db=await openJobDB();
+  try{
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readonly");
+      const req=tx.objectStore(JOB_STORE).get(key);
+      req.onsuccess=()=>resolve(req.result||null);
+      req.onerror=()=>reject(req.error||new Error("Checkpoint lesen fehlgeschlagen."));
+    });
+  }finally{db.close()}
+}
+async function jobDelete(key){
+  const db=await openJobDB();
+  try{
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readwrite");
+      tx.objectStore(JOB_STORE).delete(key);
+      tx.oncomplete=()=>resolve();
+      tx.onerror=()=>reject(tx.error||new Error("Checkpoint löschen fehlgeschlagen."));
+    });
+  }finally{db.close()}
+}
+async function makeJobKey(text,chunks){
+  const data=new TextEncoder().encode(text+"|"+chunks.length+"|"+els.modelSelect.value+"|"+els.speed.value);
+  const digest=await crypto.subtle.digest("SHA-256",data);
+  return "job:"+Array.from(new Uint8Array(digest)).slice(0,12).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
 function withTimeout(promise, ms, label){
   let timer;
   return Promise.race([
@@ -632,7 +687,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.16 START =====");
+  log("DIAG","===== DIAGNOSE v0.17 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -688,12 +743,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.16 OK =====");
+    log("DIAG","===== DIAGNOSE v0.17 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.16 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.17 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -702,35 +757,34 @@ async function diagnose(){
 
 async function generate(){
   const txt=els.text.value.trim(); if(!txt)return;
+  let jobKey=null;
   try{
-    // Load once only to obtain model config/voice, then release ONNX before Piper phase.
-    if(!session)await loadModel(); if(!session)return;
     cancelRequested=false; els.generate.disabled=true;els.cancel.disabled=false;els.preview.disabled=true;els.result.classList.add("hidden");
 
     const chunks=makeChunks(txt);
-    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value),mode:"two-phase"});
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
+    jobKey=await makeJobKey(txt,chunks);
+    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value),mode:"checkpoint-two-phase",jobKey});
 
-    const voice=(config?.espeak?.voice||"de-de").toLowerCase();
+    // Phase 1 does NOT load ONNX at all. This keeps Safari's memory footprint lower.
+    const voice="de";
+    let checkpoint=await jobGet(jobKey);
+    let phonemeBatches=checkpoint?.phonemeBatches || new Array(chunks.length);
+    let startIndex=Number(checkpoint?.done||0);
+    if(!Array.isArray(phonemeBatches) || phonemeBatches.length!==chunks.length){
+      phonemeBatches=new Array(chunks.length);
+      startIndex=0;
+    }
 
-    // PHASE 1: Piper only. Remove ONNX from memory before creating the phonemizer worker.
-    setStatus("Vorbereitung: ONNX-Speicher wird freigegeben …",.01,"0 %");
-    try{
-      await session.release();
-      log("MODEL","session released before phonemization");
-    }catch(err){ logError("session.release before phonemization",err); }
-    session=null;
-    loadedModel=null;
-    await sleep(900);
+    if(startIndex>0){
+      log("CHECKPOINT","resume",{jobKey,done:startIndex,total:chunks.length});
+      setStatus(`Fortsetzen ab Phonemisierung ${startIndex+1}/${chunks.length} …`,(startIndex/chunks.length)*.35,`${Math.round(startIndex/chunks.length*100)} %`);
+    }
 
-    const phonemeBatches=new Array(chunks.length);
     let client=null;
     try{
-      for(let i=0;i<chunks.length;i++){
+      for(let i=startIndex;i<chunks.length;i++){
         if(cancelRequested)throw new Error("Abgebrochen");
-
-        // Safari/iOS: piper-wasm accumulates memory across callMain invocations.
-        // Recreate the worker every 5 chunks while ONNX is not loaded.
         if(!client){
           client=createPhonemizerClient();
           log("PHASE1","worker batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
@@ -746,22 +800,38 @@ async function generate(){
           client.close();
           client=null;
           log("PHASE1","worker batch released",{done:i+1,total:chunks.length});
-          await sleep(550);
-        }else{
-          await sleep(12);
+          await sleep(500);
         }
 
-        if((i+1)%25===0) log("PHASE1","phonemized",{done:i+1,total:chunks.length});
+        // Persistent checkpoint every 25 chunks.
+        if((i+1)%25===0 || (i+1)===chunks.length){
+          await jobPut({key:jobKey,done:i+1,total:chunks.length,phonemeBatches,updatedAt:Date.now()});
+          log("CHECKPOINT","saved",{jobKey,done:i+1,total:chunks.length});
+        }
+
+        // Proactively restart Safari's JS/WASM process before cumulative worker leakage kills it.
+        if((i+1)%150===0 && (i+1)<chunks.length){
+          if(client){client.close();client=null}
+          await jobPut({key:jobKey,done:i+1,total:chunks.length,phonemeBatches,updatedAt:Date.now()});
+          localStorage.setItem(RESUME_KEY,jobKey);
+          setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
+          log("CHECKPOINT","controlled reload",{jobKey,done:i+1,total:chunks.length});
+          await sleep(250);
+          location.reload();
+          return;
+        }
       }
     }finally{
       if(client) client.close();
     }
 
     log("PHASE1","complete",{chunks:chunks.length});
-    setStatus("Phonemisierung fertig. Speicher wird bereinigt …",.35,"35 %");
-    await sleep(1200);
+    localStorage.removeItem(RESUME_KEY);
+    await jobPut({key:jobKey,done:chunks.length,total:chunks.length,phonemeBatches,phase:"audio",updatedAt:Date.now()});
+    setStatus("Phonemisierung fertig. Sprachmodell wird geladen …",.35,"35 %");
+    await sleep(500);
 
-    // PHASE 2: ONNX + MP3 only. Piper worker no longer exists.
+    // PHASE 2: ONNX + MP3 only.
     await loadModel();
     if(!session) throw new Error("Sprachmodell konnte für Audio-Phase nicht geladen werden.");
 
@@ -771,18 +841,18 @@ async function generate(){
     for(let i=0;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
       const c=chunks[i];
-      const pct=.35 + (i/chunks.length)*.64;
+      const pct=.35+(i/chunks.length)*.64;
       const prefix=`Audio ${i+1}/${chunks.length}`;
-      log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:c.text.length,ids:phonemeBatches[i].length});
-      const f32=await synthesizeIds(phonemeBatches[i],c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
+      const ids=phonemeBatches[i];
+      if(!Array.isArray(ids)||ids.length<4) throw new Error(`Phoneme für Abschnitt ${i+1} fehlen.`);
+      log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:c.text.length,ids:ids.length});
+      const f32=await synthesizeIds(ids,c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
       setStatus(`${prefix}: MP3 kodieren …`,pct,`${Math.round(pct*100)} %`);
       encodePCM(enc,floatToInt16(f32),parts);
       encodePCM(enc,silence(sr,c.paragraphEnd?pPause:sPause),parts);
-      // Drop phoneme array as soon as this chunk is finished.
       phonemeBatches[i]=null;
       log("CHUNK","done",{index:i+1,total:chunks.length,mp3Parts:parts.length});
 
-      // With Piper gone, recycle less often to avoid repeated 63 MB model reconstruction.
       if((i+1)%12===0 && (i+1)<chunks.length){
         setStatus(`${prefix}: ONNX-Speicher wird erneuert …`,pct,`${Math.round(pct*100)} %`);
         await recycleOnnxSession(`after audio chunk ${i+1}`);
@@ -798,6 +868,8 @@ async function generate(){
     resultUrl=URL.createObjectURL(blob);els.audio.src=resultUrl;els.download.href=resultUrl;
     els.download.download=`Mittelalter_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
+    await jobDelete(jobKey);
+    localStorage.removeItem(RESUME_KEY);
     setStatus("Fertig. Die komplette MP3 ist bereit.",1,"100 %");
   }catch(err){
     console.error(err);
@@ -920,3 +992,13 @@ els.clearLog.addEventListener("click",()=>{
 
 restorePersistentState();
 updateTextState({save:false});
+
+setTimeout(()=>{
+  try{
+    const resume=localStorage.getItem(RESUME_KEY);
+    if(resume && els.text.value.trim()){
+      log("CHECKPOINT","auto resume requested",{jobKey:resume});
+      generate();
+    }
+  }catch(err){logError("auto resume",err)}
+},700);
