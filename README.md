@@ -1,4 +1,4 @@
-# German Neural Reader v0.5 – Persistent Text + Auto Diagnose Log
+# German Neural Reader v0.6 – German Piper-WASM Fix + Full Diagnostics
 
 # German Neural Reader
 
@@ -91,3 +91,24 @@ Wenn ein Fehler auftritt:
 - Diagnose scrollt nach Abschluss automatisch zum vollständigen Log.
 - `Kompletten Log kopieren` kopiert den gesamten Diagnoseverlauf.
 - iOS-Dateiauswahl wird nach Upload zurückgesetzt, damit dieselbe TXT später erneut gewählt werden kann.
+
+
+## v0.6 – wichtiger Fix
+
+Der bisherige `phonemizer`-NPM-Baustein wurde entfernt. Der Grund:
+Die verwendete Version 1.2.1 enthält im Quellcode `SUPPORTED_LANGUAGES = ["en"]` und ist damit für unser deutsches Thorsten-Modell die falsche Phonemizer-Schicht.
+
+v0.6 nutzt stattdessen `@diffusionstudio/piper-wasm`, das Piper/eSpeak-NG-Daten für die eigentliche mehrsprachige Piper-Phonemisierung bereitstellt.
+
+### Neue Diagnose
+Die Diagnose prüft jetzt einzeln:
+1. Browser-Umgebung
+2. Piper-WASM JavaScript
+3. Piper-WASM `.wasm`
+4. eSpeak `.data`
+5. Script/Factory
+6. WASM/eSpeak-Initialisierung
+7. deutsche Phonemisierung
+8. Thorsten ONNX + Audio
+
+Jeder Schritt landet vollständig im kopierbaren Diagnose-Log.

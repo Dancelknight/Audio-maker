@@ -1,8 +1,6 @@
-import { phonemize } from "https://cdn.jsdelivr.net/npm/phonemizer@1.2.1";
-
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.3";
+const LOG_VERSION = "0.6";
 const logLines = [];
 function nowISO(){ return new Date().toISOString(); }
 function safeJson(v){
@@ -54,6 +52,169 @@ const MODELS = {
     config:"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json?download=true"
   }
 };
+
+const PHONEMIZER = {
+  js: "https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.js",
+  wasm: "https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.wasm",
+  data: "https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.data"
+};
+
+let phonemizerFactory = null;
+let phonemizerModule = null;
+let phonemizerPending = null;
+
+async function fetchProbe(url, label){
+  const t0 = performance.now();
+  log("PHONEMIZER_ASSET",`${label} fetch start`,{url});
+  try{
+    const r = await fetch(url,{method:"GET",cache:"force-cache",mode:"cors"});
+    log("PHONEMIZER_ASSET",`${label} fetch response`,{
+      ok:r.ok,status:r.status,type:r.type,
+      contentType:r.headers.get("content-type"),
+      contentLength:r.headers.get("content-length"),
+      ms:Math.round(performance.now()-t0)
+    });
+    if(!r.ok) throw new Error(`${label} HTTP ${r.status}`);
+    // We intentionally do not read huge WASM/data bodies here during normal generation.
+    return true;
+  }catch(err){
+    logError(`PHONEMIZER_ASSET ${label}`,err);
+    throw err;
+  }
+}
+
+async function loadPiperPhonemizerScript(){
+  if(phonemizerFactory) return phonemizerFactory;
+  if(window.createPiperPhonemize){
+    phonemizerFactory = window.createPiperPhonemize;
+    log("PHONEMIZER","factory already present");
+    return phonemizerFactory;
+  }
+
+  log("PHONEMIZER","script element create",{src:PHONEMIZER.js});
+  await new Promise((resolve,reject)=>{
+    const s=document.createElement("script");
+    s.src=PHONEMIZER.js;
+    s.async=true;
+    s.onload=()=>{
+      log("PHONEMIZER","script onload",{factoryType:typeof window.createPiperPhonemize});
+      if(window.createPiperPhonemize) resolve();
+      else reject(new Error("piper-wasm script loaded, but createPiperPhonemize was not found"));
+    };
+    s.onerror=(e)=>{
+      log("PHONEMIZER","script onerror",{src:PHONEMIZER.js});
+      reject(new Error("piper-wasm script failed to load"));
+    };
+    document.head.appendChild(s);
+  });
+
+  phonemizerFactory = window.createPiperPhonemize;
+  return phonemizerFactory;
+}
+
+async function initPiperPhonemizer(){
+  if(phonemizerModule) return phonemizerModule;
+  const factory = await loadPiperPhonemizerScript();
+
+  const t0=performance.now();
+  log("PHONEMIZER","WASM module init start",{
+    wasm:PHONEMIZER.wasm,
+    data:PHONEMIZER.data
+  });
+
+  phonemizerModule = await withTimeout(factory({
+    noInitialRun:true,
+    noExitRuntime:true,
+    print:(line)=>{
+      log("PHONEMIZER_STDOUT","line",line);
+      if(phonemizerPending){
+        try{
+          const parsed=JSON.parse(line);
+          if(Array.isArray(parsed?.phoneme_ids)){
+            const pending=phonemizerPending;
+            phonemizerPending=null;
+            pending.resolve(parsed);
+          }
+        }catch(err){
+          log("PHONEMIZER_STDOUT","non-json",line);
+        }
+      }
+    },
+    printErr:(line)=>{
+      log("PHONEMIZER_STDERR","line",line);
+      if(phonemizerPending && /error|fatal|exception|abort/i.test(String(line))){
+        const pending=phonemizerPending;
+        phonemizerPending=null;
+        pending.reject(new Error(String(line)));
+      }
+    },
+    locateFile:(file)=>{
+      let resolved=file;
+      if(file.endsWith(".wasm")) resolved=PHONEMIZER.wasm;
+      else if(file.endsWith(".data")) resolved=PHONEMIZER.data;
+      log("PHONEMIZER","locateFile",{file,resolved});
+      return resolved;
+    },
+    monitorRunDependencies:(left)=>{
+      log("PHONEMIZER","run dependencies",{left});
+    }
+  }),90000,"Piper-WASM Initialisierung");
+
+  log("PHONEMIZER","WASM module init done",{
+    ms:Math.round(performance.now()-t0),
+    hasCallMain:typeof phonemizerModule?.callMain==="function"
+  });
+
+  if(typeof phonemizerModule?.callMain!=="function"){
+    throw new Error("Piper-WASM initialisiert, aber callMain fehlt.");
+  }
+  return phonemizerModule;
+}
+
+async function piperPhonemize(text, language="de-de", timeout=45000){
+  const mod=await initPiperPhonemizer();
+  const t0=performance.now();
+  log("PHONEMIZER","callMain start",{language,textLength:text.length,preview:text.slice(0,120)});
+
+  if(phonemizerPending){
+    throw new Error("Phonemizer ist bereits beschäftigt.");
+  }
+
+  const resultPromise=new Promise((resolve,reject)=>{
+    phonemizerPending={resolve,reject};
+  });
+
+  try{
+    mod.callMain([
+      "-l", language,
+      "--input", JSON.stringify([{text:text.trim()}]),
+      "--espeak_data", "/espeak-ng-data"
+    ]);
+  }catch(err){
+    phonemizerPending=null;
+    logError("PHONEMIZER callMain",err);
+    throw err;
+  }
+
+  let parsed;
+  try{
+    parsed=await withTimeout(resultPromise,timeout,"Piper-WASM Phonemisierung");
+  }catch(err){
+    phonemizerPending=null;
+    logError("PHONEMIZER wait output",err);
+    throw err;
+  }
+
+  log("PHONEMIZER","callMain done",{
+    ms:Math.round(performance.now()-t0),
+    idCount:parsed.phoneme_ids?.length||0,
+    phonemeCount:parsed.phonemes?.length||0,
+    processedText:parsed.processed_text||null
+  });
+
+  return parsed.phoneme_ids;
+}
+
 
 let session=null, config=null, loadedModel=null, cancelRequested=false, resultUrl=null;
 let lastStageStarted=0;
@@ -136,7 +297,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded",{
+log("BOOT","App loaded v0.6",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -230,24 +391,12 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 async function textToIds(text, timeout=45000){
-  const voice=config?.espeak?.voice||"de";
-  const t0=performance.now();
-  log("PHONEMIZER","start",{voice,textLength:text.length,preview:text.slice(0,120)});
-  let out;
-  try{
-    out=await withTimeout(phonemize(text,voice),timeout,"Phonemisierung");
-    log("PHONEMIZER","done",{ms:Math.round(performance.now()-t0),type:Array.isArray(out)?"array":typeof out,preview:Array.isArray(out)?String(out[0]).slice(0,160):String(out).slice(0,160)});
-  }catch(err){
-    logError("phonemizer",err);
-    throw err;
+  const voice=(config?.espeak?.voice||"de-de").toLowerCase();
+  log("PHONEMIZER","textToIds",{voice,textLength:text.length});
+  const ids=await piperPhonemize(text,voice,timeout);
+  if(!Array.isArray(ids) || ids.length<4){
+    throw new Error("Piper-WASM lieferte keine verwertbaren phoneme_ids.");
   }
-  let p=(Array.isArray(out)?out.join(" "):String(out)).normalize("NFD");
-  const ids=[], map=config.phoneme_id_map;
-  addId(ids,map,"^"); addId(ids,map,"_");
-  for(const ch of Array.from(p)){ addId(ids,map,ch); addId(ids,map,"_"); }
-  addId(ids,map,"$");
-  log("PHONEMIZER","ids built",{count:ids.length,phonemeChars:p.length});
-  if(ids.length<4) throw new Error("Phonemisierung lieferte keine verwertbaren Phoneme.");
   return ids;
 }
 async function synthesize(text,speed,stageCb=()=>{}){
@@ -347,61 +496,68 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE START =====");
+  log("DIAG","===== DIAGNOSE v0.6 START =====");
+
   try{
+    setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
     log("DIAG","environment",{
       version:LOG_VERSION,
       href:location.href,
       userAgent:navigator.userAgent,
+      platform:navigator.platform,
+      language:navigator.language,
       online:navigator.onLine,
       visibility:document.visibilityState,
       crossOriginIsolated:window.crossOriginIsolated,
       wasm:typeof WebAssembly!=="undefined",
       bigint64:typeof BigInt64Array!=="undefined",
-      ortPresent:!!window.ort
+      hardwareConcurrency:navigator.hardwareConcurrency||null,
+      deviceMemory:navigator.deviceMemory||null
     });
 
-    setStatus("Diagnose 1/5: CDN/Phonemizer-Modul …",.08);
-    log("DIAG","phonemizer function",{type:typeof phonemize});
+    setStatus("Diagnose 2/8: Piper-WASM JavaScript erreichbar? …",.12);
+    await fetchProbe(PHONEMIZER.js,"JS");
 
-    setStatus("Diagnose 2/5: Phonemizer Mini-Test …",.18);
-    const p0=performance.now();
-    let p;
-    try{
-      p=await withTimeout(phonemize("Test.","de"),15000,"Phonemizer Mini-Test");
-      log("DIAG","phonemizer mini success",{ms:Math.round(performance.now()-p0),result:p});
-    }catch(err){
-      logError("DIAG phonemizer mini",err);
-      throw err;
-    }
+    setStatus("Diagnose 3/8: Piper-WASM WASM erreichbar? …",.20);
+    await fetchProbe(PHONEMIZER.wasm,"WASM");
 
-    setStatus("Diagnose 3/5: Phonemizer Deutsch-Test …",.30);
-    const p1=performance.now();
-    try{
-      const pde=await withTimeout(phonemize("Die Philosophie des Mittelalters.","de"),30000,"Phonemizer Deutsch-Test");
-      log("DIAG","phonemizer german success",{ms:Math.round(performance.now()-p1),result:pde});
-    }catch(err){
-      logError("DIAG phonemizer german",err);
-      throw err;
-    }
+    setStatus("Diagnose 4/8: eSpeak-Datendatei erreichbar? …",.28);
+    await fetchProbe(PHONEMIZER.data,"DATA");
 
-    setStatus("Diagnose 4/5: Sprachmodell …",.48);
+    setStatus("Diagnose 5/8: Piper-WASM Script laden …",.36);
+    const factory=await withTimeout(loadPiperPhonemizerScript(),30000,"Piper-WASM Script");
+    log("DIAG","factory ready",{type:typeof factory});
+
+    setStatus("Diagnose 6/8: eSpeak/WASM initialisieren …",.48);
+    const mod=await initPiperPhonemizer();
+    log("DIAG","module ready",{
+      hasCallMain:typeof mod?.callMain==="function",
+      hasFS:!!mod?.FS
+    });
+
+    setStatus("Diagnose 7/8: Deutsche Phonemisierung …",.62);
+    const ids=await piperPhonemize("Die Philosophie des Mittelalters.","de-de",30000);
+    log("DIAG","german phonemization success",{idCount:ids.length,firstIds:ids.slice(0,30)});
+
+    setStatus("Diagnose 8/8: Thorsten ONNX + Audio …",.75);
     if(!session) await loadModel();
-    if(!session) throw new Error("Sprachmodell ist nicht geladen.");
-    log("DIAG","model ready",{loadedModel,sampleRate:config?.audio?.sample_rate,espeakVoice:config?.espeak?.voice});
+    if(!session) throw new Error("Thorsten-Sprachmodell ist nicht geladen.");
 
-    setStatus("Diagnose 5/5: ONNX-Test-Inferenz …",.68);
     const audio=await synthesize("Kurzer Audiotest.",1,(stage)=>log("DIAG_STAGE",stage));
-    if(!audio.length)throw new Error("Kein Audio.");
-    log("DIAG","audio success",{samples:audio.length,sampleRate:config.audio.sample_rate,durationSec:Number((audio.length/config.audio.sample_rate).toFixed(2))});
+    if(!audio.length) throw new Error("ONNX lieferte kein Audio.");
+    log("DIAG","audio success",{
+      samples:audio.length,
+      sampleRate:config.audio.sample_rate,
+      durationSec:Number((audio.length/config.audio.sample_rate).toFixed(2))
+    });
 
-    setStatus("Diagnose OK: alle Tests erfolgreich.",1);
-    log("DIAG","===== DIAGNOSE OK =====");
+    setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
+    log("DIAG","===== DIAGNOSE v0.6 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE ENDE MIT FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.6 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();

@@ -29,3 +29,10 @@ License: LGPL-3.0.
 https://github.com/zhuker/lamejs
 
 The application code in this folder was created for this project and does not bundle the source code of the third-party libraries above; they are loaded from their published CDN distributions.
+
+
+## @diffusionstudio/piper-wasm
+
+Used for Piper/eSpeak-NG phonemization in the browser.
+Runtime files are loaded from jsDelivr.
+https://www.npmjs.com/package/@diffusionstudio/piper-wasm
