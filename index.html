@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111111" />
   <title>German Neural Reader</title>
-  <link rel="stylesheet" href="./styles.css?v=0.23" />
+  <link rel="stylesheet" href="./styles.css?v=0.24" />
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.all.js"></script>
 </head>
@@ -13,7 +13,7 @@
   <main class="shell">
     <header>
       <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.23</small></h1>
+      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.24</small></h1>
       <p class="lede">Liest lange deutsche Texte mit Piper/Thorsten direkt im Browser vor und erzeugt eine zusammenhängende MP3.</p>
     </header>
 
@@ -85,6 +85,15 @@
             <option value="900">lang</option>
           </select>
         </label>
+        <label>
+          <span>MP3-Qualität</span>
+          <select id="bitrate">
+            <option value="32">32 kbps · sehr klein</option>
+            <option value="40" selected>40 kbps · Standard (empfohlen)</option>
+            <option value="64">64 kbps · hohe Qualität</option>
+            <option value="96">96 kbps · sehr hohe Qualität</option>
+          </select>
+        </label>
       </div>
 
       <div class="buttonRow">
@@ -99,7 +108,7 @@
 
       <p class="hint">
         Für lange Skripte auf dem iPhone: Safari im Vordergrund lassen und das Display während der Berechnung nicht sperren. v0.2 zeigt während jedes Abschnitts separat Phonemisierung und Audio-Berechnung an; dadurch sieht man sofort, ob Safari wirklich hängt.
-        Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert.
+        Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert. Neue Jobs verwenden standardmäßig 40 kbps; bereits laufende Jobs behalten automatisch ihre ursprüngliche Bitrate.
       </p>
     </section>
 
@@ -143,6 +152,6 @@
     </details>
   </main>
 
-  <script type="module" src="./app.js?v=0.23"></script>
+  <script type="module" src="./app.js?v=0.24"></script>
 </body>
 </html>
