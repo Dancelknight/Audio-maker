@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <title>German Neural Reader</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.all.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
+      <h1>German Neural Reader</h1>
+      <p class="lede">Liest lange deutsche Texte mit Piper/Thorsten direkt im Browser vor und erzeugt eine zusammenhängende MP3.</p>
+    </header>
+
+    <section class="card">
+      <div class="grid two">
+        <label>
+          <span>Voice model</span>
+          <select id="modelSelect">
+            <option value="medium" selected>Thorsten · Medium · ~63 MB (empfohlen fürs iPhone)</option>
+            <option value="high">Thorsten · High · ~114 MB (mehr Speicher)</option>
+          </select>
+        </label>
+        <label>
+          <span>Tempo</span>
+          <div class="rangeRow">
+            <input id="speed" type="range" min="0.78" max="1.18" step="0.01" value="0.94" />
+            <output id="speedOut">0.94×</output>
+          </div>
+        </label>
+      </div>
+
+      <div class="buttonRow">
+        <button id="loadModel" class="primary">1 · Stimme laden</button>
+        <button id="preview" disabled>Stimme testen</button>
+      </div>
+
+      <div class="statusWrap">
+        <div class="statusLine"><span id="status">Bereit.</span><span id="progressText"></span></div>
+        <progress id="progress" max="1" value="0"></progress>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="sectionTitle">
+        <h2>Text</h2>
+        <span id="charCount">0 Zeichen</span>
+      </div>
+
+      <div class="buttonRow compact">
+        <label class="fileButton">
+          TXT auswählen
+          <input id="fileInput" type="file" accept=".txt,text/plain" hidden />
+        </label>
+        <button id="loadBundled">Mittelalter-Text laden</button>
+        <button id="clearText">Leeren</button>
+      </div>
+
+      <textarea id="text" spellcheck="false" placeholder="Text hier einfügen oder TXT-Datei auswählen …"></textarea>
+    </section>
+
+    <section class="card">
+      <div class="grid two">
+        <label>
+          <span>Pause zwischen Sätzen</span>
+          <select id="sentencePause">
+            <option value="160">kurz</option>
+            <option value="240" selected>natürlich</option>
+            <option value="340">deutlich</option>
+          </select>
+        </label>
+        <label>
+          <span>Pause zwischen Absätzen</span>
+          <select id="paragraphPause">
+            <option value="450">kurz</option>
+            <option value="650" selected>natürlich</option>
+            <option value="900">lang</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="buttonRow">
+        <button id="generate" class="primary" disabled>2 · Komplette MP3 erzeugen</button>
+        <button id="cancel" class="danger" disabled>Abbrechen</button>
+      </div>
+
+      <div id="result" class="result hidden">
+        <audio id="audio" controls preload="metadata"></audio>
+        <a id="download" class="download" download="german_reader.mp3">MP3 sichern</a>
+      </div>
+
+      <p class="hint">
+        Für lange Skripte auf dem iPhone: Safari im Vordergrund lassen und das Display während der Berechnung nicht sperren.
+        Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert.
+      </p>
+    </section>
+
+    <details class="card">
+      <summary>Technische Hinweise</summary>
+      <div class="detailsBody">
+        <p>Die Spracherzeugung läuft mit Piper ONNX lokal im Browser. Für die Phonemisierung wird eSpeak-NG über Phonemizer.js verwendet. Die MP3 wird im Browser mit lamejs erzeugt.</p>
+        <p>Beim ersten Start werden Bibliotheken sowie das gewählte Sprachmodell aus dem Internet geladen. Der eingegebene Text wird nicht an einen TTS-Server geschickt.</p>
+      </div>
+    </details>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
