@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.14";
+const LOG_VERSION = "0.15";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.14",{
+log("BOOT","App loaded v0.15",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -433,46 +433,66 @@ function addId(ids,map,key){
   const v=map[key]; if(v===undefined)return;
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
-async function workerPhonemize(text, voice, timeout=45000){
-  const worker=new Worker("./phonemizer-worker.js?v=0.14");
-  const t0=performance.now();
-  log("PHONEMIZER_WORKER","start",{voice,textLength:text.length});
-  try{
-    const result=await withTimeout(new Promise((resolve,reject)=>{
-      worker.onmessage=(e)=>{
-        const msg=e.data||{};
-        if(msg.type==="result") resolve(msg);
-        else if(msg.type==="error") reject(new Error(msg.message||"Phonemizer worker error"));
-      };
-      worker.onerror=(e)=>reject(new Error(e.message||"Phonemizer worker failed"));
-      worker.postMessage({text,language:voice});
-    }),timeout,"Phonemizer-Worker");
-    log("PHONEMIZER_WORKER","done",{
-      ms:Math.round(performance.now()-t0),
-      idCount:result.ids?.length||0,
-      phonemeCount:result.phonemeCount||0,
-      processedText:result.processedText?.slice(0,140)||null
-    });
-    return result.ids;
-  }finally{
-    worker.terminate();
-    log("PHONEMIZER_WORKER","terminated");
-    await sleep(80);
-  }
+function createPhonemizerClient(){
+  const worker=new Worker("./phonemizer-worker.js?v=0.15");
+  let seq=0;
+  const pending=new Map();
+
+  worker.onmessage=(e)=>{
+    const msg=e.data||{};
+    const p=pending.get(msg.requestId);
+    if(!p) return;
+    pending.delete(msg.requestId);
+    if(msg.type==="result") p.resolve(msg);
+    else p.reject(new Error(msg.message||"Phonemizer worker error"));
+  };
+  worker.onerror=(e)=>{
+    const err=new Error(e.message||"Phonemizer worker failed");
+    for(const p of pending.values()) p.reject(err);
+    pending.clear();
+  };
+
+  return {
+    async phonemize(text,voice,timeout=45000){
+      const requestId=++seq;
+      const t0=performance.now();
+      const result=await withTimeout(new Promise((resolve,reject)=>{
+        pending.set(requestId,{resolve,reject});
+        worker.postMessage({requestId,text,language:voice});
+      }),timeout,"Phonemizer-Worker");
+      log("PHONEMIZER_WORKER","done",{
+        requestId,
+        ms:Math.round(performance.now()-t0),
+        idCount:result.ids?.length||0,
+        phonemeCount:result.phonemeCount||0,
+        processedText:result.processedText?.slice(0,140)||null
+      });
+      return result.ids;
+    },
+    close(){
+      try{ worker.postMessage({type:"close"}); }catch(_){}
+      worker.terminate();
+      log("PHONEMIZER_WORKER","terminated");
+    }
+  };
 }
 
 async function textToIds(text, timeout=45000){
   const voice=(config?.espeak?.voice||"de-de").toLowerCase();
-  log("PHONEMIZER","textToIds",{voice,textLength:text.length,mode:"worker"});
-  const ids=await workerPhonemize(text,voice,timeout);
-  if(!Array.isArray(ids) || ids.length<4){
-    throw new Error("Piper-WASM lieferte keine verwertbaren phoneme_ids.");
+  log("PHONEMIZER","textToIds",{voice,textLength:text.length,mode:"single-worker"});
+  const client=createPhonemizerClient();
+  try{
+    const ids=await client.phonemize(text,voice,timeout);
+    if(!Array.isArray(ids) || ids.length<4){
+      throw new Error("Piper-WASM lieferte keine verwertbaren phoneme_ids.");
+    }
+    return ids;
+  }finally{
+    client.close();
+    await sleep(80);
   }
-  return ids;
 }
-async function synthesize(text,speed,stageCb=()=>{}){
-  stageCb("Phonemisierung …");
-  const ids=await textToIds(text);
+async function synthesizeIds(ids,text,speed,stageCb=()=>{}){
   log("ONNX","prepare inputs",{ids:ids.length,textLength:text.length});
   await sleep(0);
   stageCb("Audio-Berechnung …");
@@ -504,6 +524,12 @@ async function synthesize(text,speed,stageCb=()=>{}){
       logError("onnx.dispose",err);
     }
   }
+}
+
+async function synthesize(text,speed,stageCb=()=>{}){
+  stageCb("Phonemisierung …");
+  const ids=await textToIds(text);
+  return await synthesizeIds(ids,text,speed,stageCb);
 }
 
 function cleanText(s){
@@ -606,7 +632,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.14 START =====");
+  log("DIAG","===== DIAGNOSE v0.15 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -662,12 +688,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.14 OK =====");
+    log("DIAG","===== DIAGNOSE v0.15 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.14 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.15 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -677,32 +703,77 @@ async function diagnose(){
 async function generate(){
   const txt=els.text.value.trim(); if(!txt)return;
   try{
+    // Load once only to obtain model config/voice, then release ONNX before Piper phase.
     if(!session)await loadModel(); if(!session)return;
     cancelRequested=false; els.generate.disabled=true;els.cancel.disabled=false;els.preview.disabled=true;els.result.classList.add("hidden");
+
     const chunks=makeChunks(txt);
-    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value)});
+    log("GENERATE","start",{textLength:txt.length,chunks:chunks.length,speed:Number(els.speed.value),sentencePause:Number(els.sentencePause.value),paragraphPause:Number(els.paragraphPause.value),mode:"two-phase"});
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
+
+    const voice=(config?.espeak?.voice||"de-de").toLowerCase();
+
+    // PHASE 1: Piper only. Remove ONNX from memory before creating the phonemizer worker.
+    setStatus("Vorbereitung: ONNX-Speicher wird freigegeben …",.01,"0 %");
+    try{
+      await session.release();
+      log("MODEL","session released before phonemization");
+    }catch(err){ logError("session.release before phonemization",err); }
+    session=null;
+    loadedModel=null;
+    await sleep(900);
+
+    const phonemeBatches=new Array(chunks.length);
+    const client=createPhonemizerClient();
+    try{
+      for(let i=0;i<chunks.length;i++){
+        if(cancelRequested)throw new Error("Abgebrochen");
+        const pct=(i/chunks.length)*0.35;
+        setStatus(`Phonemisierung ${i+1}/${chunks.length} …`,pct,`${Math.round((i/chunks.length)*100)} %`);
+        const ids=await client.phonemize(chunks[i].text,voice,45000);
+        if(!Array.isArray(ids)||ids.length<4) throw new Error(`Keine Phoneme für Abschnitt ${i+1}`);
+        phonemeBatches[i]=ids;
+        if((i+1)%25===0) log("PHASE1","phonemized",{done:i+1,total:chunks.length});
+        await sleep(8);
+      }
+    }finally{
+      client.close();
+    }
+
+    log("PHASE1","complete",{chunks:chunks.length});
+    setStatus("Phonemisierung fertig. Speicher wird bereinigt …",.35,"35 %");
+    await sleep(1200);
+
+    // PHASE 2: ONNX + MP3 only. Piper worker no longer exists.
+    await loadModel();
+    if(!session) throw new Error("Sprachmodell konnte für Audio-Phase nicht geladen werden.");
+
     const sr=config.audio.sample_rate, enc=new window.lamejs.Mp3Encoder(1,sr,96), parts=[];
     const sPause=Number(els.sentencePause.value),pPause=Number(els.paragraphPause.value),speed=Number(els.speed.value);
 
     for(let i=0;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
-      const c=chunks[i], pct=i/chunks.length;
-      log("CHUNK","start",{index:i+1,total:chunks.length,textLength:c.text.length,paragraphEnd:c.paragraphEnd,preview:c.text.slice(0,100)});
-      const prefix=`Abschnitt ${i+1}/${chunks.length}`;
-      const f32=await synthesize(c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
+      const c=chunks[i];
+      const pct=.35 + (i/chunks.length)*.64;
+      const prefix=`Audio ${i+1}/${chunks.length}`;
+      log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:c.text.length,ids:phonemeBatches[i].length});
+      const f32=await synthesizeIds(phonemeBatches[i],c.text,speed,(stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`));
       setStatus(`${prefix}: MP3 kodieren …`,pct,`${Math.round(pct*100)} %`);
       encodePCM(enc,floatToInt16(f32),parts);
       encodePCM(enc,silence(sr,c.paragraphEnd?pPause:sPause),parts);
+      // Drop phoneme array as soon as this chunk is finished.
+      phonemeBatches[i]=null;
       log("CHUNK","done",{index:i+1,total:chunks.length,mp3Parts:parts.length});
-      // iOS Safari: bound cumulative ONNX/WASM memory. Recreate the session every 2 chunks.
-      if((i+1)%2===0 && (i+1)<chunks.length){
-        setStatus(`${prefix}: Speicher wird freigegeben …`,pct,`${Math.round(pct*100)} %`);
-        await recycleOnnxSession(`after chunk ${i+1}`);
+
+      // With Piper gone, recycle less often to avoid repeated 63 MB model reconstruction.
+      if((i+1)%12===0 && (i+1)<chunks.length){
+        setStatus(`${prefix}: ONNX-Speicher wird erneuert …`,pct,`${Math.round(pct*100)} %`);
+        await recycleOnnxSession(`after audio chunk ${i+1}`);
       }else{
-        await sleep(220);
+        await sleep(140);
       }
     }
+
     setStatus("MP3 wird abgeschlossen …",.995,"99 %");
     const tail=enc.flush();if(tail.length)parts.push(new Uint8Array(tail));
     const blob=new Blob(parts,{type:"audio/mpeg"});
@@ -716,7 +787,9 @@ async function generate(){
     logError("GENERATE",err);
     setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
   }finally{
-    els.generate.disabled=!session||!els.text.value.trim();els.cancel.disabled=true;els.preview.disabled=!session;
+    els.generate.disabled=!els.text.value.trim();
+    els.cancel.disabled=true;
+    els.preview.disabled=!session;
   }
 }
 
