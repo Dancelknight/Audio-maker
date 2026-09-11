@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.26";
+const LOG_VERSION = "0.27";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.26",{
+log("BOOT","App loaded v0.27",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -641,47 +641,70 @@ async function synthesize(text,speed,stageCb=()=>{}){
   return await synthesizeIds(ids,text,speed,stageCb);
 }
 
-async function synthesizeIdsInWorker(ids,text,speed,stageCb=()=>{}){
-  await waitUntilVisible();
-  stageCb("Audio-Berechnung im isolierten Worker …");
-  const requestId=Date.now()+Math.random();
-  const worker=new Worker("./onnx-worker.js?v=0.26");
-  const t0=performance.now();
-  try{
-    const result=await withTimeout(new Promise((resolve,reject)=>{
-      worker.onmessage=(e)=>{
-        const msg=e.data||{};
-        if(msg.requestId!==requestId) return;
-        if(msg.type==="result") resolve(msg);
-        else reject(Object.assign(new Error(msg.message||"ONNX worker error"),{name:msg.name||"Error",stack:msg.stack||null}));
-      };
-      worker.onerror=(e)=>reject(new Error(e.message||"ONNX worker failed"));
-      worker.postMessage({
-        requestId,
-        modelUrl:MODELS[els.modelSelect.value].model,
-        configUrl:MODELS[els.modelSelect.value].config,
-        ids,
-        speed
-      });
-    }),120000,"ONNX-Worker");
+function createOnnxAudioClient(){
+  const worker=new Worker("./onnx-worker.js?v=0.27");
+  let seq=0;
+  let closed=false;
 
-    const audio=result.audio instanceof Float32Array ? result.audio : new Float32Array(result.audio||[]);
-    if(!audio.length) throw new Error("ONNX-Worker hat kein Audio geliefert.");
-    log("ONNX_WORKER","done",{
-      ms:Math.round(performance.now()-t0),
-      workerMs:result.modelInitAndRunMs||null,
-      samples:audio.length,
-      sampleRate:result.sampleRate||22050,
-      textLength:text.length,
-      ids:ids.length
-    });
-    return {audio,sampleRate:result.sampleRate||22050};
-  }finally{
-    try{worker.postMessage({type:"close"})}catch(_){}
-    worker.terminate();
-    log("ONNX_WORKER","terminated");
-    await sleep(120);
-  }
+  return {
+    async synthesize(ids,text,speed,stageCb=()=>{}){
+      if(closed) throw new Error("ONNX worker already closed");
+      await waitUntilVisible();
+      stageCb("Audio-Berechnung …");
+      const requestId=++seq;
+      const t0=performance.now();
+
+      const result=await withTimeout(new Promise((resolve,reject)=>{
+        const onMessage=(e)=>{
+          const msg=e.data||{};
+          if(msg.requestId!==requestId) return;
+          worker.removeEventListener("message",onMessage);
+          worker.removeEventListener("error",onError);
+          if(msg.type==="result") resolve(msg);
+          else reject(Object.assign(new Error(msg.message||"ONNX worker error"),{name:msg.name||"Error",stack:msg.stack||null}));
+        };
+        const onError=(e)=>{
+          worker.removeEventListener("message",onMessage);
+          worker.removeEventListener("error",onError);
+          reject(new Error(e.message||"ONNX worker failed"));
+        };
+        worker.addEventListener("message",onMessage);
+        worker.addEventListener("error",onError);
+        worker.postMessage({
+          type:"synthesize",
+          requestId,
+          modelUrl:MODELS[els.modelSelect.value].model,
+          configUrl:MODELS[els.modelSelect.value].config,
+          ids,
+          speed
+        });
+      }),120000,"ONNX-Worker");
+
+      const audio=result.audio instanceof Float32Array ? result.audio : new Float32Array(result.audio||[]);
+      if(!audio.length) throw new Error("ONNX-Worker hat kein Audio geliefert.");
+
+      log("ONNX_WORKER","done",{
+        requestId,
+        ms:Math.round(performance.now()-t0),
+        initialized:!!result.initialized,
+        initMs:result.initMs||0,
+        runMs:result.runMs||null,
+        samples:audio.length,
+        sampleRate:result.sampleRate||22050,
+        textLength:text.length,
+        ids:ids.length
+      });
+
+      return {audio,sampleRate:result.sampleRate||22050};
+    },
+    close(){
+      if(closed) return;
+      closed=true;
+      try{worker.postMessage({type:"close"})}catch(_){}
+      setTimeout(()=>{ try{worker.terminate()}catch(_){} },80);
+      log("ONNX_WORKER","batch terminated");
+    }
+  };
 }
 
 function cleanText(s){
@@ -784,7 +807,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.26 START =====");
+  log("DIAG","===== DIAGNOSE v0.27 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -840,12 +863,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.26 OK =====");
+    log("DIAG","===== DIAGNOSE v0.27 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.26 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.27 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -895,7 +918,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.26 were always encoded at 96 kbps.
+    // Jobs created before v0.27 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1008,7 +1031,9 @@ async function generate(){
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
 
-    for(let i=audioDone;i<chunks.length;i++){
+    let audioClient=null;
+    try{
+      for(let i=audioDone;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
       await waitUntilVisible();
 
@@ -1021,8 +1046,13 @@ async function generate(){
         throw new Error(`Phoneme für Abschnitt ${i+1} fehlen.`);
       }
 
+      if(!audioClient){
+        audioClient=createOnnxAudioClient();
+        log("ONNX_WORKER","batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
+      }
+
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
-      const workerResult=await synthesizeIdsInWorker(
+      const workerResult=await audioClient.synthesize(
         ids,chunk.text,speed,
         (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
       );
@@ -1069,15 +1099,24 @@ async function generate(){
       if(audioDone<chunks.length){
         localStorage.setItem(RESUME_KEY,jobKey);
         setStatus(
-          `Audio ${audioDone}/${chunks.length} gespeichert – Worker freigegeben …`,
+          `Audio ${audioDone}/${chunks.length} gespeichert …`,
           .35+(audioDone/chunks.length)*.64,
           `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
         );
       }
 
-      // The ONNX worker has already been terminated at this point.
-      // Give WebKit a short idle window before creating the next isolated worker.
-      await sleep(280);
+      // Reuse one ONNX session for up to five chunks, then destroy the whole worker.
+      if(audioDone%5===0 || audioDone===chunks.length){
+        audioClient?.close();
+        audioClient=null;
+        log("ONNX_WORKER","batch released",{audioDone,total:chunks.length});
+        await sleep(350);
+      }else{
+        await sleep(80);
+      }
+      }
+    }finally{
+      if(audioClient) audioClient.close();
     }
 
     // FINAL ASSEMBLY: concatenate every persisted MP3 segment in order.
