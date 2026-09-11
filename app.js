@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.25";
+const LOG_VERSION = "0.26";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.25",{
+log("BOOT","App loaded v0.26",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -641,6 +641,49 @@ async function synthesize(text,speed,stageCb=()=>{}){
   return await synthesizeIds(ids,text,speed,stageCb);
 }
 
+async function synthesizeIdsInWorker(ids,text,speed,stageCb=()=>{}){
+  await waitUntilVisible();
+  stageCb("Audio-Berechnung im isolierten Worker …");
+  const requestId=Date.now()+Math.random();
+  const worker=new Worker("./onnx-worker.js?v=0.26");
+  const t0=performance.now();
+  try{
+    const result=await withTimeout(new Promise((resolve,reject)=>{
+      worker.onmessage=(e)=>{
+        const msg=e.data||{};
+        if(msg.requestId!==requestId) return;
+        if(msg.type==="result") resolve(msg);
+        else reject(Object.assign(new Error(msg.message||"ONNX worker error"),{name:msg.name||"Error",stack:msg.stack||null}));
+      };
+      worker.onerror=(e)=>reject(new Error(e.message||"ONNX worker failed"));
+      worker.postMessage({
+        requestId,
+        modelUrl:MODELS[els.modelSelect.value].model,
+        configUrl:MODELS[els.modelSelect.value].config,
+        ids,
+        speed
+      });
+    }),120000,"ONNX-Worker");
+
+    const audio=result.audio instanceof Float32Array ? result.audio : new Float32Array(result.audio||[]);
+    if(!audio.length) throw new Error("ONNX-Worker hat kein Audio geliefert.");
+    log("ONNX_WORKER","done",{
+      ms:Math.round(performance.now()-t0),
+      workerMs:result.modelInitAndRunMs||null,
+      samples:audio.length,
+      sampleRate:result.sampleRate||22050,
+      textLength:text.length,
+      ids:ids.length
+    });
+    return {audio,sampleRate:result.sampleRate||22050};
+  }finally{
+    try{worker.postMessage({type:"close"})}catch(_){}
+    worker.terminate();
+    log("ONNX_WORKER","terminated");
+    await sleep(120);
+  }
+}
+
 function cleanText(s){
   return s.replace(/\u00ad/g,"").replace(/[‐‑‒–—]/g,"-").replace(/[“”]/g,'"').replace(/[‘’]/g,"'")
     .replace(/\s+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
@@ -741,7 +784,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.25 START =====");
+  log("DIAG","===== DIAGNOSE v0.26 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -797,12 +840,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.25 OK =====");
+    log("DIAG","===== DIAGNOSE v0.26 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.25 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.26 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -852,7 +895,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.25 were always encoded at 96 kbps.
+    // Jobs created before v0.26 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -958,10 +1001,9 @@ async function generate(){
     );
 
     await waitUntilVisible();
-    await loadModel();
-    if(!session) throw new Error("Sprachmodell konnte für Audio-Phase nicht geladen werden.");
 
-    const sr=config.audio.sample_rate;
+    // Audio generation runs in a disposable ONNX worker.
+    // The main page no longer keeps a heavy ONNX session alive during long jobs.
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
@@ -980,10 +1022,12 @@ async function generate(){
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
-      const f32=await synthesizeIds(
+      const workerResult=await synthesizeIdsInWorker(
         ids,chunk.text,speed,
         (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
       );
+      const f32=workerResult.audio;
+      const sr=workerResult.sampleRate;
 
       setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
 
@@ -1022,40 +1066,18 @@ async function generate(){
 
       log("CHUNK","segment saved",{index:i+1,total:chunks.length,bytes:segmentBlob.size,audioDone});
 
-      // iPhone/Safari: reset the heavy ONNX session after every audio chunk,
-      // but keep the page alive. Full page reloads are much rarer because Safari
-      // can enter its own "A problem repeatedly occurred" crash screen after
-      // repeated reloads.
       if(audioDone<chunks.length){
-        try{
-          await session.release();
-          log("MODEL","session released after audio chunk",{audioDone});
-        }catch(err){logError("audio session release",err)}
-        session=null;
-        loadedModel=null;
-
         localStorage.setItem(RESUME_KEY,jobKey);
         setStatus(
-          `Audio ${audioDone}/${chunks.length} gespeichert – Sprachmodell wird neu initialisiert …`,
+          `Audio ${audioDone}/${chunks.length} gespeichert – Worker freigegeben …`,
           .35+(audioDone/chunks.length)*.64,
           `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
         );
-
-        // Only do a true page refresh occasionally to reclaim WebKit resources.
-        if(audioDone%25===0){
-          log("CHECKPOINT","controlled page refresh",{jobKey,audioDone,total:chunks.length});
-          await sleep(500);
-          location.reload();
-          return;
-        }
-
-        await sleep(450);
-        await waitUntilVisible();
-        await loadModel();
-        if(!session) throw new Error("Sprachmodell konnte nach Speicherbereinigung nicht neu geladen werden.");
       }
 
-      await sleep(120);
+      // The ONNX worker has already been terminated at this point.
+      // Give WebKit a short idle window before creating the next isolated worker.
+      await sleep(280);
     }
 
     // FINAL ASSEMBLY: concatenate every persisted MP3 segment in order.
