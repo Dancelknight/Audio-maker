@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.19";
+const LOG_VERSION = "0.20";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -250,6 +250,7 @@ async function piperPhonemize(text, language="de-de", timeout=45000){
 
 let session=null, config=null, loadedModel=null, cancelRequested=false, resultUrl=null;
 let lastStageStarted=0;
+let generationRunning=false;
 
 const STORAGE = {
   text: "gnr:text:v1",
@@ -336,7 +337,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.19",{
+log("BOOT","App loaded v0.20",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -491,7 +492,8 @@ async function loadModel(){
     loadedModel=key;
     log("MODEL","session ready",{key,inputNames:session.inputNames,outputNames:session.outputNames});
     setStatus("Stimme ist bereit. Bitte zuerst „Stimme testen“.",1);
-    els.preview.disabled=false; els.generate.disabled=!els.text.value.trim();
+    els.preview.disabled=generationRunning;
+    els.generate.disabled=generationRunning || !els.text.value.trim();
   }catch(err){
     console.error(err); logError("loadModel",err); setStatus("Fehler: "+(err?.message||err),0);
     session=null;config=null;loadedModel=null;
@@ -701,7 +703,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.19 START =====");
+  log("DIAG","===== DIAGNOSE v0.20 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -757,12 +759,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.19 OK =====");
+    log("DIAG","===== DIAGNOSE v0.20 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.19 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.20 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -771,6 +773,11 @@ async function diagnose(){
 
 async function generate(){
   const txt=els.text.value.trim(); if(!txt)return;
+  if(generationRunning){
+    log("GENERATE","duplicate start ignored");
+    return;
+  }
+  generationRunning=true;
   let jobKey=null;
   try{
     cancelRequested=false;
@@ -1003,6 +1010,7 @@ async function generate(){
     logError("GENERATE",err);
     setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
   }finally{
+    generationRunning=false;
     els.generate.disabled=!els.text.value.trim();
     els.cancel.disabled=true;
     els.preview.disabled=!session;
@@ -1012,7 +1020,7 @@ async function generate(){
 let textSaveTimer=null;
 function updateTextState({save=true, reason="edit"}={}){
   els.charCount.textContent=`${els.text.value.length.toLocaleString("de-DE")} Zeichen`;
-  els.generate.disabled=!session||!els.text.value.trim();
+  els.generate.disabled=generationRunning || !session || !els.text.value.trim();
   if(save){
     clearTimeout(textSaveTimer);
     textSaveTimer=setTimeout(()=>persistText(reason),120);
@@ -1123,7 +1131,7 @@ updateTextState({save:false});
 setTimeout(()=>{
   try{
     const resume=localStorage.getItem(RESUME_KEY);
-    if(resume && els.text.value.trim()){
+    if(resume && els.text.value.trim() && !generationRunning){
       log("CHECKPOINT","auto resume requested",{jobKey:resume});
       generate();
     }
