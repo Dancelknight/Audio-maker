@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.13";
+const LOG_VERSION = "0.14";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -336,7 +336,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.13",{
+log("BOOT","App loaded v0.14",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -433,10 +433,38 @@ function addId(ids,map,key){
   const v=map[key]; if(v===undefined)return;
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
+async function workerPhonemize(text, voice, timeout=45000){
+  const worker=new Worker("./phonemizer-worker.js?v=0.14");
+  const t0=performance.now();
+  log("PHONEMIZER_WORKER","start",{voice,textLength:text.length});
+  try{
+    const result=await withTimeout(new Promise((resolve,reject)=>{
+      worker.onmessage=(e)=>{
+        const msg=e.data||{};
+        if(msg.type==="result") resolve(msg);
+        else if(msg.type==="error") reject(new Error(msg.message||"Phonemizer worker error"));
+      };
+      worker.onerror=(e)=>reject(new Error(e.message||"Phonemizer worker failed"));
+      worker.postMessage({text,language:voice});
+    }),timeout,"Phonemizer-Worker");
+    log("PHONEMIZER_WORKER","done",{
+      ms:Math.round(performance.now()-t0),
+      idCount:result.ids?.length||0,
+      phonemeCount:result.phonemeCount||0,
+      processedText:result.processedText?.slice(0,140)||null
+    });
+    return result.ids;
+  }finally{
+    worker.terminate();
+    log("PHONEMIZER_WORKER","terminated");
+    await sleep(80);
+  }
+}
+
 async function textToIds(text, timeout=45000){
   const voice=(config?.espeak?.voice||"de-de").toLowerCase();
-  log("PHONEMIZER","textToIds",{voice,textLength:text.length});
-  const ids=await piperPhonemize(text,voice,timeout);
+  log("PHONEMIZER","textToIds",{voice,textLength:text.length,mode:"worker"});
+  const ids=await workerPhonemize(text,voice,timeout);
   if(!Array.isArray(ids) || ids.length<4){
     throw new Error("Piper-WASM lieferte keine verwertbaren phoneme_ids.");
   }
@@ -578,7 +606,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.13 START =====");
+  log("DIAG","===== DIAGNOSE v0.14 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -634,12 +662,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.13 OK =====");
+    log("DIAG","===== DIAGNOSE v0.14 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.13 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.14 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
