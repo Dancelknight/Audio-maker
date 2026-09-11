@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.21";
+const LOG_VERSION = "0.22";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -55,7 +55,17 @@ window.addEventListener("pageshow", e => {
 });
 document.addEventListener("visibilitychange", () => {
   try{ persistText("visibilitychange"); }catch(_){}
-  log("LIFECYCLE","visibilitychange",{visibility:document.visibilityState});
+  backgroundPaused=document.visibilityState!=="visible";
+  log("LIFECYCLE","visibilitychange",{visibility:document.visibilityState,backgroundPaused});
+  if(!backgroundPaused){
+    try{
+      const resume=localStorage.getItem(RESUME_KEY);
+      if(resume && els.text.value.trim() && !generationRunning){
+        log("CHECKPOINT","resume on foreground",{jobKey:resume});
+        setTimeout(()=>generate(),250);
+      }
+    }catch(err){logError("foreground resume",err)}
+  }
 });
 
 const els = {
@@ -251,6 +261,7 @@ async function piperPhonemize(text, language="de-de", timeout=45000){
 let session=null, config=null, loadedModel=null, cancelRequested=false, resultUrl=null;
 let lastStageStarted=0;
 let generationRunning=false;
+let backgroundPaused=false;
 
 const STORAGE = {
   text: "gnr:text:v1",
@@ -337,7 +348,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.21",{
+log("BOOT","App loaded v0.22",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -703,7 +714,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.21 START =====");
+  log("DIAG","===== DIAGNOSE v0.22 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -759,16 +770,25 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.21 OK =====");
+    log("DIAG","===== DIAGNOSE v0.22 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.21 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.22 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
   }
+}
+
+async function waitUntilVisible(){
+  while(document.visibilityState!=="visible"){
+    backgroundPaused=true;
+    setStatus("Pausiert – Safari ist im Hintergrund. Beim Zurückkehren geht es automatisch weiter.",els.progress.value,els.progressText.textContent);
+    await sleep(500);
+  }
+  backgroundPaused=false;
 }
 
 async function generate(){
@@ -892,6 +912,7 @@ async function generate(){
       `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
     );
 
+    await waitUntilVisible();
     await loadModel();
     if(!session) throw new Error("Sprachmodell konnte für Audio-Phase nicht geladen werden.");
 
@@ -902,6 +923,7 @@ async function generate(){
 
     for(let i=audioDone;i<chunks.length;i++){
       if(cancelRequested)throw new Error("Abgebrochen");
+      await waitUntilVisible();
 
       const chunk=chunks[i];
       const pct=.35+(i/chunks.length)*.64;
@@ -1131,7 +1153,7 @@ updateTextState({save:false});
 setTimeout(()=>{
   try{
     const resume=localStorage.getItem(RESUME_KEY);
-    if(resume && els.text.value.trim() && !generationRunning){
+    if(resume && els.text.value.trim() && !generationRunning && document.visibilityState==="visible"){
       log("CHECKPOINT","auto resume requested",{jobKey:resume});
       generate();
     }
