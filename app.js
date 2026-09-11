@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.22";
+const LOG_VERSION = "0.23";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -348,7 +348,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.22",{
+log("BOOT","App loaded v0.23",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -714,7 +714,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.22 START =====");
+  log("DIAG","===== DIAGNOSE v0.23 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -770,12 +770,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.22 OK =====");
+    log("DIAG","===== DIAGNOSE v0.23 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.22 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.23 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -973,27 +973,40 @@ async function generate(){
 
       log("CHUNK","segment saved",{index:i+1,total:chunks.length,bytes:segmentBlob.size,audioDone});
 
-      // iPhone/Safari ultra-safe mode: exactly one audio chunk per page lifecycle.
+      // iPhone/Safari: reset the heavy ONNX session after every audio chunk,
+      // but keep the page alive. Full page reloads are much rarer because Safari
+      // can enter its own "A problem repeatedly occurred" crash screen after
+      // repeated reloads.
       if(audioDone<chunks.length){
         try{
           await session.release();
-          log("MODEL","session released before controlled audio reload",{audioDone});
-        }catch(err){logError("audio reload release",err)}
+          log("MODEL","session released after audio chunk",{audioDone});
+        }catch(err){logError("audio session release",err)}
         session=null;
         loadedModel=null;
+
         localStorage.setItem(RESUME_KEY,jobKey);
         setStatus(
-          `Audio ${audioDone}/${chunks.length} gespeichert – Speicherbereinigung …`,
+          `Audio ${audioDone}/${chunks.length} gespeichert – Sprachmodell wird neu initialisiert …`,
           .35+(audioDone/chunks.length)*.64,
           `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
         );
-        log("CHECKPOINT","controlled reload audio",{jobKey,audioDone,total:chunks.length});
-        await sleep(300);
-        location.reload();
-        return;
+
+        // Only do a true page refresh occasionally to reclaim WebKit resources.
+        if(audioDone%25===0){
+          log("CHECKPOINT","controlled page refresh",{jobKey,audioDone,total:chunks.length});
+          await sleep(500);
+          location.reload();
+          return;
+        }
+
+        await sleep(450);
+        await waitUntilVisible();
+        await loadModel();
+        if(!session) throw new Error("Sprachmodell konnte nach Speicherbereinigung nicht neu geladen werden.");
       }
 
-      await sleep(140);
+      await sleep(120);
     }
 
     // FINAL ASSEMBLY: concatenate every persisted MP3 segment in order.
