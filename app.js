@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.24";
+const LOG_VERSION = "0.25";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.24",{
+log("BOOT","App loaded v0.25",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -430,18 +430,35 @@ async function jobDelete(key){
   }finally{db.close()}
 }
 async function jobPutAudioBlob(key,parent,index,blob){
-  const db=await openJobDB();
-  try{
-    await new Promise((resolve,reject)=>{
-      const tx=db.transaction(JOB_STORE,"readwrite");
-      tx.objectStore(JOB_STORE).put({
-        key,parent,index,blob,bytes:blob.size,updatedAt:Date.now()
+  let lastErr=null;
+  for(let attempt=1;attempt<=4;attempt++){
+    await waitUntilVisible();
+    let db=null;
+    try{
+      db=await openJobDB();
+      await new Promise((resolve,reject)=>{
+        const tx=db.transaction(JOB_STORE,"readwrite");
+        tx.objectStore(JOB_STORE).put({
+          key,parent,index,blob,bytes:blob.size,updatedAt:Date.now()
+        });
+        tx.oncomplete=()=>resolve();
+        tx.onerror=()=>reject(tx.error||new Error("Audio-Segment speichern fehlgeschlagen."));
+        tx.onabort=()=>reject(tx.error||new Error("Audio-Segment speichern abgebrochen."));
       });
-      tx.oncomplete=()=>resolve();
-      tx.onerror=()=>reject(tx.error||new Error("Audio-Segment speichern fehlgeschlagen."));
-      tx.onabort=()=>reject(tx.error||new Error("Audio-Segment speichern abgebrochen."));
-    });
-  }finally{db.close()}
+      if(attempt>1) log("INDEXEDDB","audio save recovered",{index:index+1,attempt});
+      return;
+    }catch(err){
+      lastErr=err;
+      logError(`INDEXEDDB audio save attempt ${attempt}`,err);
+      const msg=String(err?.message||err);
+      const retryable=/Indexed Database|Connection.*lost|internal error|UnknownError|InvalidStateError/i.test(msg)||err?.name==="UnknownError";
+      if(!retryable || attempt===4) throw err;
+      await sleep(500*attempt);
+    }finally{
+      try{db?.close()}catch(_){}
+    }
+  }
+  throw lastErr||new Error("Audio-Segment konnte nicht gespeichert werden.");
 }
 async function makeLegacyJobKey(text,chunks){
   const data=new TextEncoder().encode(text+"|"+chunks.length+"|"+els.modelSelect.value+"|"+els.speed.value);
@@ -724,7 +741,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.24 START =====");
+  log("DIAG","===== DIAGNOSE v0.25 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -780,12 +797,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.24 OK =====");
+    log("DIAG","===== DIAGNOSE v0.25 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.24 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.25 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -835,7 +852,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.24 were always encoded at 96 kbps.
+    // Jobs created before v0.25 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -986,6 +1003,9 @@ async function generate(){
       // Let temporary PCM/encoder allocations become collectible before IndexedDB write.
       await sleep(80);
 
+      // iOS can invalidate IndexedDB while Safari is backgrounded.
+      // Never begin a write while hidden; the save helper also retries with a fresh DB connection.
+      await waitUntilVisible();
       await jobPutAudioBlob(`${jobKey}:audio:${i}`,jobKey,i,segmentBlob);
 
       audioDone=i+1;
