@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.50";
+const LOG_VERSION = "0.51";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -155,7 +155,7 @@ const els = {
   paragraphPause:$("paragraphPause"), bitrate:$("bitrate"), generate:$("generate"),
   cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog"),
   computeMode:$("computeMode"), computeModeHint:$("computeModeHint"), hfEndpoint:$("hfEndpoint"), hfEndpointWrap:$("hfEndpointWrap"),
-  loadTestText:$("loadTestText"), recoverJob:$("recoverJob")
+  loadTestText:$("loadTestText"), recoverJob:$("recoverJob"), hardReset:$("hardReset")
 };
 
 const MODELS = {
@@ -457,7 +457,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.50",{
+log("BOOT","App loaded v0.51",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -524,6 +524,63 @@ function openJobDB(){
     req.onsuccess=()=>resolve(req.result);
     req.onerror=()=>reject(req.error||new Error("IndexedDB konnte nicht geöffnet werden."));
   });
+}
+
+async function clearAllJobs(){
+  const db=await openJobDB();
+  try{
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readwrite");
+      tx.objectStore(JOB_STORE).clear();
+      tx.oncomplete=()=>resolve();
+      tx.onerror=()=>reject(tx.error||new Error("Job-Speicher konnte nicht geleert werden."));
+      tx.onabort=()=>reject(tx.error||new Error("Job-Speicher wurde beim Leeren abgebrochen."));
+    });
+  }finally{ db.close(); }
+}
+
+async function hardResetApp(){
+  cancelRequested=true;
+  generationRunning=false;
+  try{ await clearAllJobs(); }catch(err){ logError("hard reset clear jobs",err); }
+
+  try{
+    for(let i=localStorage.length-1;i>=0;i--){
+      const key=localStorage.key(i);
+      if(key && (key.startsWith("gnr:") || key===TEXT_BACKUP_KEY || key===PERSISTENT_LOG_KEY)){
+        localStorage.removeItem(key);
+      }
+    }
+  }catch(err){ logError("hard reset localStorage",err); }
+
+  try{
+    if(resultUrl){ URL.revokeObjectURL(resultUrl); resultUrl=null; }
+    if(els.audio){ els.audio.removeAttribute("src"); els.audio.load(); }
+    if(els.download){ els.download.removeAttribute("href"); }
+    els.result?.classList.add("hidden");
+  }catch(_){}
+
+  try{
+    els.text.value="";
+    els.computeMode.value="local";
+    els.modelSelect.value=MOBILE_SAFE_MODEL;
+    els.speed.value="0.94";
+    els.speedOut.value="0.94×";
+    els.sentencePause.value="240";
+    els.paragraphPause.value="650";
+    if(els.bitrate) els.bitrate.value="40";
+    if(els.hfEndpoint) els.hfEndpoint.value="";
+  }catch(_){}
+
+  setGenerationUiLocked(false);
+  updateTextState({save:false});
+  updateComputeModeUI();
+  setStatus("Alles zurückgesetzt. Seite wird neu geladen …",0,"");
+  log("RESET","hard reset complete");
+  setTimeout(()=>{
+    const clean=location.origin+location.pathname+"?reset="+Date.now();
+    location.replace(clean);
+  },250);
 }
 async function jobPut(record){
   const db=await openJobDB();
@@ -808,7 +865,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.50");
+  const worker=new Worker("./phonemizer-worker.js?v=0.51");
   let seq=0;
   const pending=new Map();
 
@@ -926,7 +983,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.50");
+  const worker=new Worker("./onnx-worker.js?v=0.51");
   let seq=0;
   let closed=false;
 
@@ -1165,7 +1222,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.50 START =====");
+  log("DIAG","===== DIAGNOSE v0.51 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1221,12 +1278,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.50 OK =====");
+    log("DIAG","===== DIAGNOSE v0.51 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.50 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.51 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1435,7 +1492,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.50 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.51 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1518,7 +1575,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.50: completed jobs keep one final MP3 record. Never re-enter the
+    // v0.51: completed jobs keep one final MP3 record. Never re-enter the
     // repair path merely because segment cleanup/reload happened later.
     if(checkpoint?.phase==="complete"){
       const finalRec=await jobGet(`${jobKey}:audio:final`);
@@ -1541,7 +1598,7 @@ async function generate(){
       log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
     }
 
-    // v0.50 stores the large immutable phoneme matrix separately so the tiny
+    // v0.51 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1709,7 +1766,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.50: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.51: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1719,7 +1776,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.50-low-overhead"
+      speedMode:"v0.51-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1907,7 +1964,7 @@ async function generate(){
     els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
-    // v0.50 crash-safe completion:
+    // v0.51 crash-safe completion:
     // 1) persist the final MP3,
     // 2) mark the parent complete,
     // 3) clear auto-resume.
@@ -1965,6 +2022,7 @@ function setGenerationUiLocked(locked){
   if(els.loadModel) els.loadModel.disabled=!!locked || (els.computeMode?.value||"local")!=="local";
   if(els.diagnose) els.diagnose.disabled=!!locked;
   if(els.recoverJob) els.recoverJob.disabled=!!locked;
+  if(els.hardReset) els.hardReset.disabled=false;
   if(els.cancel) els.cancel.disabled=!locked;
 }
 
@@ -2053,6 +2111,18 @@ els.preview.addEventListener("click",preview);
 els.diagnose.addEventListener("click",diagnose);
 els.generate.addEventListener("click",handleGenerate);
 els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disabled=true});
+els.hardReset?.addEventListener("click",async()=>{
+  const ok=window.confirm("Wirklich alles zurücksetzen? Alle lokalen Jobs, Audio-Segmente, Resume-Daten, gespeicherter Text und externe Modus-Auswahl werden gelöscht.");
+  if(!ok) return;
+  els.hardReset.disabled=true;
+  try{
+    await hardResetApp();
+  }catch(err){
+    logError("hard reset",err);
+    els.hardReset.disabled=false;
+    setStatus("Reset fehlgeschlagen: "+(err?.message||err),0);
+  }
+});
 
 els.text.addEventListener("input",()=>{
   if(!generationRunning) detachActiveResume("typing");
