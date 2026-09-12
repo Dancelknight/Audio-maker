@@ -3,184 +3,232 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#111111" />
-  <title>German Neural Reader</title>
-  <link rel="stylesheet" href="./styles.css?v=0.42" />
+  <meta name="theme-color" content="#f5f3ef" />
+  <meta name="description" content="German Neural Reader wandelt lange deutsche Texte direkt auf deinem Gerät in eine MP3 um – ohne Anmeldung und ohne Zeichenlimit." />
+  <title>German Neural Reader – Text zu MP3</title>
+  <link rel="stylesheet" href="./styles.css?v=1.0" />
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.all.js"></script>
 </head>
 <body>
-  <main class="shell">
-    <header>
-      <div class="eyebrow">LOKAL · KOSTENLOS · DEUTSCHE SPRACHAUSGABE</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.53</small></h1>
-      <p class="lede">Wandelt lange deutsche Texte in eine zusammenhängende MP3 um. Für Safari auf iPhone/iPad mobil optimiert. Eine direkte Vorlesefunktion im Browser ist für später denkbar.</p>
-      <p class="hint" style="margin-top:10px"><strong>Empfehlung:</strong> Bitte zuerst mit dem Test-Text ausprobieren. Er wird absichtlich in mehrere Segmente geteilt und anschließend wieder zu einer MP3 zusammengeführt.</p>
-    </header>
+  <nav class="topbar">
+    <a class="brand" href="#top" aria-label="German Neural Reader Startseite">
+      <span class="brandMark">G</span>
+      <span>German Neural Reader</span>
+    </a>
+    <div class="navActions">
+      <a href="#so-gehts">So geht’s</a>
+      <a href="#reader" class="navPrimary">Reader öffnen</a>
+    </div>
+  </nav>
 
-
-    <section class="card">
-      <div class="sectionTitle">
-        <h2>Berechnungsmodus</h2>
-        <span>lokal oder extern</span>
+  <main id="top">
+    <section class="hero">
+      <div class="heroInner">
+        <div class="eyebrow">DEUTSCHER TEXT → MP3</div>
+        <h1>Aus langen Texten<br><span>eine hörbare MP3.</span></h1>
+        <p class="heroText">Füge deinen Text ein, wähle eine deutsche Stimme und erzeuge eine zusammenhängende MP3 direkt auf deinem Gerät. Ohne Anmeldung.</p>
+        <div class="heroActions">
+          <a class="cta primaryCta" href="#reader">Jetzt ausprobieren</a>
+          <a class="cta secondaryCta" href="#so-gehts">Wie funktioniert’s?</a>
+        </div>
+        <div class="trustRow">
+          <span>✓ lokal auf dem Gerät</span>
+          <span>✓ keine Anmeldung</span>
+          <span>✓ für lange Texte</span>
+        </div>
       </div>
-      <div class="grid two">
-        <label>
-          <span>Wo soll die Stimme berechnet werden?</span>
-          <select id="computeMode">
-            <option value="local" selected>Lokal auf diesem Gerät · privat</option>
-            <option value="hf" disabled>Hugging Face Space · extern · noch nicht getestet</option>
-            <option value="colab" disabled>Google Colab · extern · demnächst</option>
-          </select>
-        </label>
-        <label id="hfEndpointWrap" style="display:none">
-          <span>Hugging Face Space URL</span>
-          <input id="hfEndpoint" type="url" inputmode="url" placeholder="https://DEIN-SPACE.hf.space" />
-        </label>
-      </div>
-      <p id="computeModeHint" class="hint">
-        Lokal: Text bleibt auf dem Gerät. Externe Berechnung ist vorbereitet, aber derzeit noch deaktiviert.
-      </p>
     </section>
 
-    <section class="card">
-      <div class="grid two">
-        <label>
-          <span>Sprachmodell</span>
-          <select id="modelSelect">
-            <option value="mobile_safe" selected>Eva K · Mobile Safe · ~20.6 MB · iPhone/iPad</option>
-            <option value="medium">Thorsten · Medium · ~63 MB</option>
-            <option value="high">Thorsten · High · ~114 MB (mehr Speicher)</option>
-          </select>
-        </label>
-        <label>
-          <span>Tempo</span>
-          <div class="rangeRow">
-            <input id="speed" type="range" min="0.78" max="1.18" step="0.01" value="0.94" />
-            <output id="speedOut">0.94×</output>
+    <section id="so-gehts" class="section">
+      <div class="sectionHeading">
+        <div class="eyebrow">SO GEHT’S</div>
+        <h2>Drei Schritte zur MP3</h2>
+      </div>
+      <div class="steps">
+        <article class="stepCard"><span class="stepNo">01</span><h3>Text einfügen</h3><p>Text direkt einfügen, TXT-Datei wählen oder den Beispieltext laden.</p></article>
+        <article class="stepCard"><span class="stepNo">02</span><h3>Stimme laden</h3><p>Auf iPhone und iPad wird automatisch die kompakte Eva-K-Stimme verwendet.</p></article>
+        <article class="stepCard"><span class="stepNo">03</span><h3>MP3 erzeugen</h3><p>Der Text wird in Abschnitte geteilt, vertont und als eine MP3 zusammengesetzt.</p></article>
+      </div>
+    </section>
+
+    <section id="reader" class="readerSection">
+      <div class="readerIntro">
+        <div>
+          <div class="eyebrow">GERMAN NEURAL READER</div>
+          <h2>Reader</h2>
+        </div>
+        <span class="versionBadge">v0.53 · Beta</span>
+      </div>
+
+      <section class="card">
+        <div class="sectionTitle">
+          <h3>1 · Stimme</h3>
+          <span>deutsche Sprachausgabe</span>
+        </div>
+        <div class="grid two">
+          <label>
+            <span>Sprachmodell</span>
+            <select id="modelSelect">
+              <option value="mobile_safe" selected>Eva K · Mobile Safe · ~20.6 MB</option>
+              <option value="medium">Thorsten · Medium · ~63 MB</option>
+              <option value="high">Thorsten · High · ~114 MB</option>
+            </select>
+          </label>
+          <label>
+            <span>Tempo</span>
+            <div class="rangeRow">
+              <input id="speed" type="range" min="0.78" max="1.18" step="0.01" value="0.94" />
+              <output id="speedOut">0.94×</output>
+            </div>
+          </label>
+        </div>
+
+        <div class="buttonRow">
+          <button id="loadModel" class="primary">Stimme laden</button>
+          <button id="preview" disabled>Stimme testen</button>
+        </div>
+
+        <div class="statusWrap">
+          <div class="statusLine"><span id="status">Bereit.</span><span id="progressText"></span></div>
+          <progress id="progress" max="1" value="0"></progress>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="sectionTitle">
+          <h3>2 · Text</h3>
+          <span id="charCount">0 Zeichen</span>
+        </div>
+
+        <div class="buttonRow compact">
+          <label class="fileButton">
+            TXT auswählen
+            <input id="fileInput" type="file" accept=".txt,text/plain" hidden />
+          </label>
+          <button id="loadTestText">Kurzen Testtext laden</button>
+          <button id="loadBundled">Beispieltext laden</button>
+          <button id="recoverJob" hidden>Alten Job fortsetzen</button>
+          <button id="clearText">Leeren</button>
+        </div>
+
+        <textarea id="text" spellcheck="false" placeholder="Text hier einfügen …"></textarea>
+        <div class="textMeta">
+          <p id="saveState">Text wird automatisch lokal gespeichert.</p>
+          <button id="forgetSavedText" class="textButton">Gespeicherten Text löschen</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="sectionTitle">
+          <h3>3 · MP3</h3>
+          <span>Pause & Qualität</span>
+        </div>
+        <div class="grid three">
+          <label>
+            <span>Satzpause</span>
+            <select id="sentencePause">
+              <option value="160">kurz</option>
+              <option value="240" selected>natürlich</option>
+              <option value="340">deutlich</option>
+            </select>
+          </label>
+          <label>
+            <span>Absatzpause</span>
+            <select id="paragraphPause">
+              <option value="450">kurz</option>
+              <option value="650" selected>natürlich</option>
+              <option value="900">lang</option>
+            </select>
+          </label>
+          <label>
+            <span>MP3-Qualität</span>
+            <select id="bitrate">
+              <option value="32">32 kbps</option>
+              <option value="40" selected>40 kbps · empfohlen</option>
+              <option value="64">64 kbps</option>
+              <option value="96">96 kbps</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="buttonRow">
+          <button id="generate" class="primary bigAction" disabled>MP3 erzeugen</button>
+          <button id="cancel" class="danger" disabled>Abbrechen</button>
+        </div>
+
+        <div id="result" class="result hidden">
+          <audio id="audio" controls preload="metadata"></audio>
+          <a id="download" class="download" download="german_reader.mp3">MP3 sichern</a>
+        </div>
+      </section>
+
+      <details class="card advancedCard">
+        <summary>Erweiterte Einstellungen & Diagnose</summary>
+        <div class="detailsBody">
+          <div class="grid two advancedGrid">
+            <label>
+              <span>Berechnungsmodus</span>
+              <select id="computeMode">
+                <option value="local" selected>Lokal auf diesem Gerät · privat</option>
+                <option value="hf" disabled>Hugging Face · demnächst</option>
+                <option value="colab" disabled>Google Colab · demnächst</option>
+              </select>
+            </label>
+            <label id="hfEndpointWrap" style="display:none">
+              <span>Hugging Face Space URL</span>
+              <input id="hfEndpoint" type="url" inputmode="url" />
+            </label>
           </div>
-        </label>
-      </div>
+          <p id="computeModeHint" class="hint">Derzeit ist nur die lokale Berechnung freigegeben.</p>
 
-      <div class="buttonRow">
-        <button id="loadModel" class="primary">1 · Stimme laden</button>
-        <button id="preview" disabled>Stimme testen</button>
-        <button id="diagnose">Diagnose</button>
-        <button id="hardReset" class="danger">Alles zurücksetzen</button>
-      </div>
+          <div class="buttonRow">
+            <button id="diagnose">Diagnose ausführen</button>
+            <button id="copyLog">Log kopieren</button>
+            <button id="clearLog">Log leeren</button>
+            <button id="hardReset" class="danger">Alles zurücksetzen</button>
+          </div>
+          <textarea id="debugLog" readonly spellcheck="false" class="debugLog"></textarea>
+        </div>
+      </details>
+    </section>
 
-      <div class="statusWrap">
-        <div class="statusLine"><span id="status">Bereit.</span><span id="progressText"></span></div>
-        <progress id="progress" max="1" value="0"></progress>
+    <section class="section privacySection">
+      <div class="privacyCard">
+        <div class="privacyIcon">⌁</div>
+        <div>
+          <div class="eyebrow">DATENSCHUTZ</div>
+          <h2>Dein Text bleibt bei dir.</h2>
+          <p>Im lokalen Modus wird dein Text nicht an einen TTS-Dienst übertragen. Sprachmodell und benötigte Bibliotheken werden aus dem Internet geladen, die eigentliche Verarbeitung findet auf deinem Gerät statt.</p>
+        </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="sectionTitle">
-        <h2>Text</h2>
-        <span id="charCount">0 Zeichen</span>
+    <section class="section supportCard">
+      <div>
+        <div class="eyebrow">KOSTENLOS NUTZBAR</div>
+        <h2>Hilft dir der Reader?</h2>
+        <p>Das Projekt bleibt kostenlos. Wenn du die Weiterentwicklung unterstützen möchtest, kannst du freiwillig einen Kaffee spendieren.</p>
       </div>
-
-      <div class="buttonRow compact">
-        <label class="fileButton">
-          TXT auswählen
-          <input id="fileInput" type="file" accept=".txt,text/plain" hidden />
-        </label>
-        <button id="loadTestText" class="primary">Test-Text laden</button>
-        <button id="loadBundled">Beispieltext aus Online-Repository laden</button>
-        <button id="recoverJob" hidden>Alten Job fortsetzen</button>
-        <button id="clearText">Leeren</button>
-        <button id="forgetSavedText">Gespeicherten Text löschen</button>
-      </div>
-
-      <textarea id="text" spellcheck="false" placeholder="Text hier einfügen oder TXT-Datei auswählen …"></textarea>
-      <p id="saveState" class="hint">Text wird automatisch lokal gespeichert.</p>
-    </section>
-
-    <section class="card">
-      <div class="grid two">
-        <label>
-          <span>Pause zwischen Sätzen</span>
-          <select id="sentencePause">
-            <option value="160">kurz</option>
-            <option value="240" selected>natürlich</option>
-            <option value="340">deutlich</option>
-          </select>
-        </label>
-        <label>
-          <span>Pause zwischen Absätzen</span>
-          <select id="paragraphPause">
-            <option value="450">kurz</option>
-            <option value="650" selected>natürlich</option>
-            <option value="900">lang</option>
-          </select>
-        </label>
-        <label>
-          <span>MP3-Qualität</span>
-          <select id="bitrate">
-            <option value="32">32 kbps · sehr klein</option>
-            <option value="40" selected>40 kbps · Standard (empfohlen)</option>
-            <option value="64">64 kbps · hohe Qualität</option>
-            <option value="96">96 kbps · sehr hohe Qualität</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="buttonRow">
-        <button id="generate" class="primary" disabled>2 · Komplette MP3 erzeugen</button>
-        <button id="cancel" class="danger" disabled>Abbrechen</button>
-      </div>
-
-      <div id="result" class="result hidden">
-        <audio id="audio" controls preload="metadata"></audio>
-        <a id="download" class="download" download="german_reader.mp3">MP3 sichern</a>
-      </div>
-
-      <p class="hint">
-        Für lange Skripte auf iPhone/iPad ist der Mobile-Safe-Modus mit Eva K automatisch aktiv. Safari bitte im Vordergrund lassen und das Display während der Berechnung nicht sperren.
-        Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert. Neue Jobs verwenden standardmäßig 40 kbps; bereits laufende Jobs behalten automatisch ihre ursprüngliche Bitrate.
-      </p>
-    </section>
-
-
-    <section class="card">
-      <div class="sectionTitle">
-        <h2>Diagnose-Log</h2>
-        <span>wird nach Diagnose automatisch angezeigt</span>
-      </div>
-      <div class="buttonRow compact">
-        <button id="copyLog" class="primary">Kompletten Log kopieren</button>
-        <button id="clearLog">Log leeren</button>
-      </div>
-      <textarea id="debugLog" readonly spellcheck="false" style="min-height:340px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px"></textarea>
-      <p class="hint">Nach <strong>Diagnose</strong> springt die Seite automatisch hierher. Dann auf <strong>Kompletten Log kopieren</strong> tippen und mir den Inhalt schicken.</p>
-    </section>
-
-    <section class="card supportCard">
-      <div class="sectionTitle">
-        <h2>Projekt unterstützen</h2>
-        <span>freiwillig</span>
-      </div>
-      <p class="hint" style="margin-top:8px">Wenn dir der Reader hilft, kannst du mir einen Kaffee spendieren. Die App bleibt kostenlos.</p>
-      <div class="buttonRow supportAmounts">
+      <div class="supportAmounts">
         <a class="supportButton" href="https://www.paypal.com/donate?business=danielstofner%40hotmail.com&currency_code=USD&amount=2" target="_blank" rel="noopener">☕ $2</a>
         <a class="supportButton" href="https://www.paypal.com/donate?business=danielstofner%40hotmail.com&currency_code=USD&amount=5" target="_blank" rel="noopener">☕ $5</a>
         <a class="supportButton" href="https://www.paypal.com/donate?business=danielstofner%40hotmail.com&currency_code=USD&amount=10" target="_blank" rel="noopener">☕ $10</a>
       </div>
-      <div class="cryptoRow">
-        <span><strong>BTC</strong> · Wallet folgt</span>
-        <span><strong>ETH</strong> · Wallet folgt</span>
-      </div>
     </section>
-
-    <details class="card">
-      <summary>Technische Hinweise</summary>
-      <div class="detailsBody">
-        <p>Die MP3-Erzeugung erfolgt derzeit lokal im Browser mit Piper ONNX. Auf iPhone/iPad wird automatisch das kleinere Eva-K-Mobile-Safe-Modell verwendet; auf stärkeren Geräten stehen zusätzlich Thorsten Medium und High zur Verfügung. Für die deutsche Phonemisierung wird Piper-WASM mit eSpeak-NG verwendet. Eine direkte Vorlesefunktion im Browser ist als spätere Erweiterung denkbar.</p>
-        <p>Beim ersten Start werden Bibliotheken sowie das gewählte Sprachmodell aus dem Internet geladen. Der eingegebene Text wird nicht an einen TTS-Server geschickt.</p>
-      </div>
-    </details>
   </main>
+
+  <footer>
+    <div class="footerInner">
+      <div><strong>German Neural Reader</strong><span> · Beta</span></div>
+      <div class="footerLinks">
+        <a href="./datenschutz.html">Datenschutz</a>
+        <a href="./lizenzen.html">Lizenzen</a>
+        <a href="https://github.com/Dancelknight/Audio-maker" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+    <p class="footerNote">Bitte nur Texte verwenden, für deren Verarbeitung du die erforderlichen Rechte besitzt.</p>
+  </footer>
 
   <script type="module" src="./app.js?v=0.53"></script>
 </body>
