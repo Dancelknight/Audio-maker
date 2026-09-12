@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.41";
+const LOG_VERSION = "0.42";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -338,7 +338,9 @@ const STORAGE = {
   speed: "gnr:speed:v1",
   sentencePause: "gnr:sentencePause:v1",
   paragraphPause: "gnr:paragraphPause:v1",
-  bitrate: "gnr:bitrate:v1"
+  bitrate: "gnr:bitrate:v1",
+  computeMode: "gnr:computeMode:v1",
+  hfEndpoint: "gnr:hfEndpoint:v1"
 };
 
 function storageSet(key, value){
@@ -399,6 +401,12 @@ function restorePersistentState(){
   if(savedBitrate && els.bitrate && [...els.bitrate.options].some(o=>o.value===savedBitrate)){
     els.bitrate.value=savedBitrate;
   }
+  const savedComputeMode=storageGet(STORAGE.computeMode,"local");
+  if(els.computeMode && [...els.computeMode.options].some(o=>o.value===savedComputeMode)){
+    els.computeMode.value=savedComputeMode;
+  }
+  const savedHfEndpoint=storageGet(STORAGE.hfEndpoint,"");
+  if(els.hfEndpoint && savedHfEndpoint) els.hfEndpoint.value=savedHfEndpoint;
 
   if(els.saveState){
     els.saveState.textContent = savedText
@@ -423,7 +431,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.41",{
+log("BOOT","App loaded v0.42",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -695,7 +703,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.41");
+  const worker=new Worker("./phonemizer-worker.js?v=0.42");
   let seq=0;
   const pending=new Map();
 
@@ -813,7 +821,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.41");
+  const worker=new Worker("./onnx-worker.js?v=0.42");
   let seq=0;
   let closed=false;
 
@@ -1041,7 +1049,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.41 START =====");
+  log("DIAG","===== DIAGNOSE v0.42 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1097,12 +1105,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.41 OK =====");
+    log("DIAG","===== DIAGNOSE v0.42 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.41 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.42 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1151,6 +1159,121 @@ async function encodeAndPersistAudioChunk({jobKey,index,chunk,ids,speed,sPause,p
   return segmentBlob.size;
 }
 
+
+const COLAB_NOTEBOOK_URL="https://colab.research.google.com/github/Dancelknight/Audio-maker/blob/main/colab/GermanReader_Colab.ipynb";
+
+function normalizedHfEndpoint(){
+  return String(els.hfEndpoint?.value||"").trim().replace(/\/+$/,"");
+}
+
+function updateComputeModeUI(){
+  const mode=els.computeMode?.value||"local";
+  if(els.hfEndpointWrap) els.hfEndpointWrap.style.display=mode==="hf"?"block":"none";
+  if(els.computeModeHint){
+    els.computeModeHint.textContent=
+      mode==="local"
+        ? "Lokal: Text bleibt auf diesem Gerät. Für iPhone/iPad wird Eva K Mobile Safe verwendet."
+        : mode==="hf"
+          ? "Extern: Der Text wird an deinen Hugging-Face-Space gesendet und dort als MP3 berechnet."
+          : "Extern: Die Seite speichert deinen Text als TXT und öffnet das vorbereitete Google-Colab-Notebook.";
+  }
+  if(els.loadModel) els.loadModel.disabled=mode!=="local";
+  if(els.preview) els.preview.disabled=mode!=="local" || !session;
+  if(els.generate){
+    els.generate.textContent=
+      mode==="local" ? "2 · Komplette MP3 erzeugen" :
+      mode==="hf" ? "2 · Extern auf Hugging Face erzeugen" :
+      "2 · In Google Colab erzeugen";
+    els.generate.disabled=generationRunning || !els.text.value.trim() || (mode==="local" && !session);
+  }
+}
+
+async function generateOnHuggingFace(){
+  const txt=els.text.value.trim();
+  if(!txt) return;
+  const base=normalizedHfEndpoint();
+  if(!base){
+    setStatus("Bitte zuerst die URL deines Hugging-Face-Spaces eintragen.",0);
+    els.hfEndpoint?.focus();
+    return;
+  }
+  generationRunning=true;
+  els.generate.disabled=true;
+  els.cancel.disabled=true;
+  els.result.classList.add("hidden");
+  storageSet(STORAGE.hfEndpoint,base);
+  setStatus("Text wird an Hugging Face gesendet …",.1,"10 %");
+  log("EXTERNAL","huggingface request start",{endpoint:base,chars:txt.length});
+  try{
+    const r=await fetch(base+"/tts",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        text:txt,
+        speed:Number(els.speed.value),
+        bitrate:Number(els.bitrate?.value||40),
+        sentence_pause_ms:Number(els.sentencePause.value),
+        paragraph_pause_ms:Number(els.paragraphPause.value)
+      })
+    });
+    if(!r.ok){
+      let detail="";
+      try{ detail=await r.text(); }catch(_){}
+      throw new Error(`Hugging Face HTTP ${r.status}${detail?": "+detail.slice(0,240):""}`);
+    }
+    setStatus("MP3 wird geladen …",.9,"90 %");
+    const blob=await r.blob();
+    if(!blob.size) throw new Error("Der Hugging-Face-Space lieferte eine leere Datei.");
+    if(resultUrl) URL.revokeObjectURL(resultUrl);
+    resultUrl=URL.createObjectURL(blob);
+    els.audio.src=resultUrl;
+    els.download.href=resultUrl;
+    els.download.download=`GermanReader_HF_${new Date().toISOString().slice(0,10)}.mp3`;
+    els.result.classList.remove("hidden");
+    log("EXTERNAL","huggingface request done",{bytes:blob.size});
+    setStatus("Fertig. Externe MP3 ist bereit.",1,"100 %");
+  }catch(err){
+    logError("HUGGING_FACE",err);
+    setStatus("Hugging Face Fehler: "+(err?.message||err),0);
+  }finally{
+    generationRunning=false;
+    updateComputeModeUI();
+  }
+}
+
+async function openColabFlow(){
+  const txt=els.text.value.trim();
+  if(!txt) return;
+  generationRunning=true;
+  updateComputeModeUI();
+  try{
+    // Save the exact input as a TXT so Colab can upload it without losing formatting.
+    const blob=new Blob([txt],{type:"text/plain;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download="GermanReader_input.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    try{ await navigator.clipboard.writeText(txt); }catch(_){}
+    log("EXTERNAL","colab handoff",{chars:txt.length,notebook:COLAB_NOTEBOOK_URL});
+    setStatus("TXT gespeichert. Google Colab wird geöffnet …",.05,"");
+    window.open(COLAB_NOTEBOOK_URL,"_blank","noopener");
+  }finally{
+    generationRunning=false;
+    updateComputeModeUI();
+  }
+}
+
+async function handleGenerate(){
+  const mode=els.computeMode?.value||"local";
+  if(mode==="hf") return await generateOnHuggingFace();
+  if(mode==="colab") return await openColabFlow();
+  return await generate();
+}
+
 async function generate(){
   const txt=els.text.value.trim(); if(!txt)return;
   if(generationRunning){
@@ -1183,7 +1306,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.41 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.42 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1262,7 +1385,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.41 stores the large immutable phoneme matrix separately so the tiny
+    // v0.42 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1430,7 +1553,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.41: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.42: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1440,7 +1563,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.41-low-overhead"
+      speedMode:"v0.42-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1646,7 +1769,8 @@ async function generate(){
 let textSaveTimer=null;
 function updateTextState({save=true, reason="edit"}={}){
   els.charCount.textContent=`${els.text.value.length.toLocaleString("de-DE")} Zeichen`;
-  els.generate.disabled=generationRunning || !session || !els.text.value.trim();
+  const mode=els.computeMode?.value||"local";
+  els.generate.disabled=generationRunning || !els.text.value.trim() || (mode==="local" && !session);
   if(save){
     clearTimeout(textSaveTimer);
     textSaveTimer=setTimeout(()=>persistText(reason),120);
@@ -1660,7 +1784,7 @@ els.speed.addEventListener("input",()=>{
 els.loadModel.addEventListener("click",loadModel);
 els.preview.addEventListener("click",preview);
 els.diagnose.addEventListener("click",diagnose);
-els.generate.addEventListener("click",generate);
+els.generate.addEventListener("click",handleGenerate);
 els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disabled=true});
 
 els.text.addEventListener("input",()=>updateTextState({save:true,reason:"typing"}));
@@ -1690,6 +1814,12 @@ els.modelSelect.addEventListener("change",()=>{
 els.sentencePause.addEventListener("change",()=>storageSet(STORAGE.sentencePause,els.sentencePause.value));
 els.paragraphPause.addEventListener("change",()=>storageSet(STORAGE.paragraphPause,els.paragraphPause.value));
 els.bitrate?.addEventListener("change",()=>storageSet(STORAGE.bitrate,els.bitrate.value));
+els.computeMode?.addEventListener("change",()=>{
+  storageSet(STORAGE.computeMode,els.computeMode.value);
+  updateComputeModeUI();
+});
+els.hfEndpoint?.addEventListener("change",()=>storageSet(STORAGE.hfEndpoint,normalizedHfEndpoint()));
+
 
 els.fileInput.addEventListener("change",async e=>{
   const f=e.target.files?.[0];
@@ -1761,11 +1891,12 @@ if(IS_IOS_WEBKIT && [...els.modelSelect.options].some(o=>o.value===MOBILE_SAFE_M
   storageSet(STORAGE.model,MOBILE_SAFE_MODEL);
 }
 updateTextState({save:false});
+updateComputeModeUI();
 
 setTimeout(()=>{
   try{
     const resume=localStorage.getItem(RESUME_KEY);
-    if(resume && els.text.value.trim() && !generationRunning && document.visibilityState==="visible"){
+    if((els.computeMode?.value||"local")==="local" && resume && els.text.value.trim() && !generationRunning && document.visibilityState==="visible"){
       log("CHECKPOINT","auto resume requested",{jobKey:resume});
       generate();
     }
