@@ -121,7 +121,7 @@ document.addEventListener("visibilitychange", () => {
   if(!backgroundPaused){
     try{
       const resume=localStorage.getItem(RESUME_KEY);
-      if(resume && els.text.value.trim() && !generationRunning){
+      if((els.computeMode?.value||"local")==="local" && resume && els.text.value.trim() && !generationRunning){
         log("CHECKPOINT","resume on foreground",{jobKey:resume});
         setTimeout(()=>generate(),250);
       }
