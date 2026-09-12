@@ -13,9 +13,34 @@
   <main class="shell">
     <header>
       <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.41</small></h1>
+      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.42</small></h1>
       <p class="lede">Liest lange deutsche Texte direkt im Browser vor und erzeugt eine zusammenhängende MP3. Für Safari auf iPhone/iPad mobil optimiert.</p>
     </header>
+
+
+    <section class="card">
+      <div class="sectionTitle">
+        <h2>Berechnungsmodus</h2>
+        <span>lokal oder extern</span>
+      </div>
+      <div class="grid two">
+        <label>
+          <span>Wo soll die Stimme berechnet werden?</span>
+          <select id="computeMode">
+            <option value="local" selected>Lokal auf diesem Gerät · privat</option>
+            <option value="hf">Hugging Face Space · extern</option>
+            <option value="colab">Google Colab · extern</option>
+          </select>
+        </label>
+        <label id="hfEndpointWrap" style="display:none">
+          <span>Hugging Face Space URL</span>
+          <input id="hfEndpoint" type="url" inputmode="url" placeholder="https://DEIN-SPACE.hf.space" />
+        </label>
+      </div>
+      <p id="computeModeHint" class="hint">
+        Lokal: Text bleibt auf dem Gerät. Extern: Text wird zur Berechnung an den gewählten Dienst gesendet.
+      </p>
+    </section>
 
     <section class="card">
       <div class="grid two">
