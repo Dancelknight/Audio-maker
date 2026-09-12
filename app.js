@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.37";
+const LOG_VERSION = "0.38";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -400,7 +400,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.37",{
+log("BOOT","App loaded v0.38",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -672,7 +672,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.37");
+  const worker=new Worker("./phonemizer-worker.js?v=0.38");
   let seq=0;
   const pending=new Map();
 
@@ -681,8 +681,13 @@ function createPhonemizerClient(){
     const p=pending.get(msg.requestId);
     if(!p) return;
     pending.delete(msg.requestId);
-    if(msg.type==="result") p.resolve(msg);
-    else p.reject(new Error(msg.message||"Phonemizer worker error"));
+    if(msg.type==="result"){
+      clearCrashBreadcrumb("phonemizer-result");
+      p.resolve(msg);
+    }else{
+      persistCrashBreadcrumb("phonemizer:error",{requestId:msg.requestId,message:msg.message||"Phonemizer worker error"});
+      p.reject(new Error(msg.message||"Phonemizer worker error"));
+    }
   };
   worker.onerror=(e)=>{
     const err=new Error(e.message||"Phonemizer worker failed");
@@ -696,6 +701,12 @@ function createPhonemizerClient(){
       const t0=performance.now();
       const result=await withTimeout(new Promise((resolve,reject)=>{
         pending.set(requestId,{resolve,reject});
+        persistCrashBreadcrumb("phonemizer:request:start",{
+          requestId,
+          textLength:text.length,
+          modelKey:els.modelSelect.value,
+          memory:memorySnapshot()
+        });
         worker.postMessage({
           requestId,
           text,
@@ -779,7 +790,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.37");
+  const worker=new Worker("./onnx-worker.js?v=0.38");
   let seq=0;
   let closed=false;
 
@@ -1007,7 +1018,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.37 START =====");
+  log("DIAG","===== DIAGNOSE v0.38 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1063,12 +1074,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.37 OK =====");
+    log("DIAG","===== DIAGNOSE v0.38 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.37 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.38 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1145,7 +1156,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.37 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.38 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1215,7 +1226,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.37 stores the large immutable phoneme matrix separately so the tiny
+    // v0.38 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1246,6 +1257,8 @@ async function generate(){
       audioDone=0;
     }
 
+    try{ localStorage.setItem(RESUME_KEY,jobKey); }catch(_){}
+
     log("GENERATE","start",{
       textLength:txt.length,
       chunks:chunks.length,
@@ -1260,6 +1273,20 @@ async function generate(){
 
     // PHASE 1: phonemization with persistent checkpoints.
     if(phase!=="audio"){
+      // Mobile memory safety: the preview/model-load session is not needed during
+      // phonemization. Release it before creating Piper/eSpeak WASM workers.
+      if(session){
+        try{
+          await session.release();
+          log("MODEL","main session released before phonemization");
+        }catch(err){
+          logError("main session release before phonemization",err);
+        }
+        session=null;
+        loadedModel=null;
+        config=null;
+        await sleep(500);
+      }
       if(startIndex>0){
         log("CHECKPOINT","resume phonemization",{jobKey,done:startIndex,total:chunks.length});
         setStatus(`Fortsetzen ab Phonemisierung ${startIndex+1}/${chunks.length} …`,(startIndex/chunks.length)*.35,`${Math.round(startIndex/chunks.length*100)} %`);
@@ -1271,6 +1298,12 @@ async function generate(){
           if(cancelRequested)throw new Error("Abgebrochen");
 
           if(!client){
+            persistCrashBreadcrumb("phonemizer:workerBatch:start",{
+              chunkIndex:i+1,
+              total:chunks.length,
+              modelKey:els.modelSelect.value,
+              memory:memorySnapshot()
+            });
             client=createPhonemizerClient();
             log("PHASE1","worker batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
           }
@@ -1285,6 +1318,7 @@ async function generate(){
             client.close();
             client=null;
             log("PHASE1","worker batch released",{done:i+1,total:chunks.length});
+            clearCrashBreadcrumb("phonemizer-batch-released");
             await sleep(500);
           }
 
@@ -1294,7 +1328,8 @@ async function generate(){
               key:jobKey,done:i+1,total:chunks.length,
               phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,phonemeModelKey:els.modelSelect.value,updatedAt:Date.now()
             });
-            log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length,separate:true});
+            localStorage.setItem(RESUME_KEY,jobKey);
+            log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length,separate:true,resumable:true});
           }
 
           if((i+1)%150===0 && (i+1)<chunks.length){
@@ -1356,7 +1391,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.37: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.38: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
