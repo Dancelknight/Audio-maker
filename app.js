@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.28";
+const LOG_VERSION = "0.29";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.28",{
+log("BOOT","App loaded v0.29",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -418,6 +418,34 @@ async function jobGet(key){
     });
   }finally{db.close()}
 }
+async function jobFindBestResume(total){
+  const db=await openJobDB();
+  try{
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readonly");
+      const store=tx.objectStore(JOB_STORE);
+      const req=store.openCursor();
+      let best=null;
+      req.onsuccess=()=>{
+        const cursor=req.result;
+        if(!cursor){
+          resolve(best);
+          return;
+        }
+        const v=cursor.value;
+        const isMainJob=v && typeof v.key==="string" && !v.key.includes(":audio:");
+        if(isMainJob && Number(v.total)===Number(total)){
+          const score=(v.phase==="audio"?1000000:0)+Number(v.audioDone||0)*1000+Number(v.done||0);
+          const bestScore=best?((best.phase==="audio"?1000000:0)+Number(best.audioDone||0)*1000+Number(best.done||0)):-1;
+          if(score>bestScore) best=v;
+        }
+        cursor.continue();
+      };
+      req.onerror=()=>reject(req.error||new Error("Jobsuche in IndexedDB fehlgeschlagen."));
+    });
+  }finally{db.close()}
+}
+
 async function jobDelete(key){
   const db=await openJobDB();
   try{
@@ -807,7 +835,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.28 START =====");
+  log("DIAG","===== DIAGNOSE v0.29 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -863,12 +891,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.28 OK =====");
+    log("DIAG","===== DIAGNOSE v0.29 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.28 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.29 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -937,16 +965,49 @@ async function generate(){
     const resumeKey=localStorage.getItem(RESUME_KEY);
 
     let checkpoint=null;
-    if(resumeKey && (resumeKey===legacyKey || resumeKey===newKey)){
-      checkpoint=await jobGet(resumeKey);
-      if(checkpoint) jobKey=resumeKey;
+
+    // First trust our persisted resume pointer if it still points to a valid job.
+    if(resumeKey){
+      try{
+        const resumed=await jobGet(resumeKey);
+        if(resumed && Number(resumed.total)===chunks.length){
+          checkpoint=resumed;
+          jobKey=resumeKey;
+          log("CHECKPOINT","resume key accepted",{jobKey,phase:checkpoint.phase,done:checkpoint.done,audioDone:checkpoint.audioDone});
+        }
+      }catch(err){
+        logError("resume key lookup",err);
+      }
     }
-    if(!jobKey){
+
+    // If the pointer is missing/stale, recover the most advanced compatible job.
+    if(!checkpoint){
+      try{
+        const best=await jobFindBestResume(chunks.length);
+        if(best){
+          checkpoint=best;
+          jobKey=best.key;
+          localStorage.setItem(RESUME_KEY,jobKey);
+          log("CHECKPOINT","best existing job recovered",{
+            jobKey,
+            phase:best.phase,
+            done:best.done,
+            audioDone:best.audioDone,
+            bitrate:best.bitrate||null
+          });
+        }
+      }catch(err){
+        logError("best job recovery",err);
+      }
+    }
+
+    // Only create/use the new bitrate-aware job when nothing resumable exists.
+    if(!checkpoint){
       jobKey=newKey;
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.28 were always encoded at 96 kbps.
+    // Jobs created before v0.29 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
