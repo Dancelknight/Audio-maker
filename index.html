@@ -46,7 +46,7 @@
         <h2>Drei Schritte zur MP3</h2>
       </div>
       <div class="steps">
-        <article class="stepCard"><span class="stepNo">01</span><h3>Text einfügen</h3><p>Text direkt einfügen, TXT-Datei wählen oder den Beispieltext laden.</p></article>
+        <article class="stepCard"><span class="stepNo">01</span><h3>Text einfügen</h3><p>Der kurze Testtext ist beim ersten Start bereits geladen. Du kannst ihn direkt ersetzen oder eine eigene TXT-Datei hochladen.</p></article>
         <article class="stepCard"><span class="stepNo">02</span><h3>Stimme laden</h3><p>Auf iPhone und iPad wird automatisch die kompakte Eva-K-Stimme verwendet.</p></article>
         <article class="stepCard"><span class="stepNo">03</span><h3>MP3 erzeugen</h3><p>Der Text wird in Abschnitte geteilt, vertont und als eine MP3 zusammengesetzt.</p></article>
       </div>
@@ -58,7 +58,7 @@
           <div class="eyebrow">GERMAN NEURAL READER</div>
           <h2>Reader</h2>
         </div>
-        <span class="versionBadge">v0.53 · Beta</span>
+        <span class="versionBadge">v0.54 · Beta</span>
       </div>
 
       <section class="card">
@@ -103,12 +103,10 @@
 
         <div class="buttonRow compact">
           <label class="fileButton">
-            TXT auswählen
+            Eigene TXT-Datei hochladen
             <input id="fileInput" type="file" accept=".txt,text/plain" hidden />
           </label>
-          <button id="loadTestText">Kurzen Testtext laden</button>
-          <button id="loadBundled">Beispieltext laden</button>
-          <button id="recoverJob" hidden>Alten Job fortsetzen</button>
+          <button id="recoverJob" hidden>Nach Absturz fortsetzen</button>
           <button id="clearText">Leeren</button>
         </div>
 
@@ -230,6 +228,6 @@
     <p class="footerNote">Bitte nur Texte verwenden, für deren Verarbeitung du die erforderlichen Rechte besitzt.</p>
   </footer>
 
-  <script type="module" src="./app.js?v=0.53"></script>
+  <script type="module" src="./app.js?v=0.54"></script>
 </body>
 </html>
