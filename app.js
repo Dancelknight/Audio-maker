@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.35";
+const LOG_VERSION = "0.36";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -118,6 +118,10 @@ const els = {
 };
 
 const MODELS = {
+  mobile_safe: {
+    model:"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/eva_k/x_low/de_DE-eva_k-x_low.onnx?download=true",
+    config:"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/eva_k/x_low/de_DE-eva_k-x_low.onnx.json?download=true"
+  },
   medium: {
     model:"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx?download=true",
     config:"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json?download=true"
@@ -303,7 +307,8 @@ let generationRunning=false;
 let backgroundPaused=false;
 
 const IS_IOS_WEBKIT=/iPad|iPhone|iPod/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent);
-const AUDIO_BACKEND=IS_IOS_WEBKIT ? "webgl" : "wasm";
+const AUDIO_BACKEND="wasm";
+const MOBILE_SAFE_MODEL="mobile_safe";
 
 const STORAGE = {
   text: "gnr:text:v1",
@@ -395,7 +400,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.35",{
+log("BOOT","App loaded v0.36",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -752,7 +757,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.35");
+  const worker=new Worker("./onnx-worker.js?v=0.36");
   let seq=0;
   let closed=false;
 
@@ -980,7 +985,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.35 START =====");
+  log("DIAG","===== DIAGNOSE v0.36 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1036,12 +1041,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.35 OK =====");
+    log("DIAG","===== DIAGNOSE v0.36 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.35 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.36 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1116,8 +1121,11 @@ async function generate(){
 
     let checkpoint=null;
 
-    // First trust our persisted resume pointer if it still points to a valid job.
-    if(resumeKey){
+    const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
+
+    // First trust our persisted resume pointer only when it belongs to the
+    // currently selected mobile-safe job. Never splice old Thorsten audio into Eva.
+    if(resumeKey && (!mobileSafeJob || resumeKey===newKey)){
       try{
         const resumed=await jobGet(resumeKey);
         if(resumed && Number(resumed.total)===chunks.length){
@@ -1130,8 +1138,9 @@ async function generate(){
       }
     }
 
-    // If the pointer is missing/stale, recover the most advanced compatible job.
-    if(!checkpoint){
+    // For normal/desktop jobs, recover the most advanced compatible job.
+    // Mobile-safe iOS deliberately does NOT resume an old Thorsten audio job.
+    if(!checkpoint && !mobileSafeJob){
       try{
         const best=await jobFindBestResume(chunks.length);
         if(best){
@@ -1155,6 +1164,41 @@ async function generate(){
     if(!checkpoint){
       jobKey=newKey;
       checkpoint=await jobGet(jobKey);
+
+      // v0.36 mobile migration: reuse immutable German phoneme IDs from the most
+      // advanced old job, but start audio again at chunk 1 so one MP3 never mixes voices.
+      if(!checkpoint && mobileSafeJob){
+        try{
+          const source=await jobFindBestResume(chunks.length);
+          if(source && source.key!==jobKey){
+            const reusable=await loadPhonemes(source.key);
+            if(Array.isArray(reusable) && reusable.length===chunks.length){
+              await savePhonemes(jobKey,reusable);
+              checkpoint={
+                key:jobKey,
+                done:chunks.length,
+                total:chunks.length,
+                phase:"audio",
+                audioDone:0,
+                bitrate:selectedBitrate,
+                model:MOBILE_SAFE_MODEL,
+                migratedPhonemesFrom:source.key,
+                updatedAt:Date.now()
+              };
+              await jobPut(checkpoint);
+              localStorage.setItem(RESUME_KEY,jobKey);
+              log("MOBILE","reused phonemes for Eva K mobile-safe job",{
+                fromJob:source.key,
+                newJob:jobKey,
+                phonemeBatches:reusable.length,
+                audioRestartAt:1
+              });
+            }
+          }
+        }catch(err){
+          logError("mobile phoneme migration",err);
+        }
+      }
     }
 
     // Jobs created before bitrate-aware checkpoints may have been encoded at 96 kbps.
@@ -1165,7 +1209,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.35 stores the large immutable phoneme matrix separately so the tiny
+    // v0.36 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1299,9 +1343,9 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.35: iPhone/iPad Safari uses WebGL instead of WASM for audio inference.
-    // WebGL keeps the model out of the unstable WASM path that repeatedly killed
-    // Safari during session.run/session.create. Desktop remains on WASM.
+    // v0.36: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // Eva K x_low model. This avoids WebGL's int64 limitation and sharply lowers
+    // model memory versus Thorsten Medium.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
     const lifecycleStartAudioDone=audioDone;
     log("BACKEND","audio execution provider selected",{backend:AUDIO_BACKEND,iosWebKit:IS_IOS_WEBKIT});
@@ -1329,7 +1373,7 @@ async function generate(){
         log("ONNX_WORKER","audio worker start",{
           from:i+1,
           to:IS_IOS_WEBKIT?chunks.length:Math.min(i+AUDIO_CHUNKS_PER_LIFECYCLE,chunks.length),
-          mode:IS_IOS_WEBKIT?"webgl-mobile":"controlled-page-reload",
+          mode:IS_IOS_WEBKIT?"mobile-safe-eva-wasm":"controlled-page-reload",
           backend:AUDIO_BACKEND
         });
       }
@@ -1475,7 +1519,7 @@ async function generate(){
     resultUrl=URL.createObjectURL(blob);
     els.audio.src=resultUrl;
     els.download.href=resultUrl;
-    els.download.download=`Mittelalter_${new Date().toISOString().slice(0,10)}.mp3`;
+    els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
     // Cleanup persistent job only after the final blob exists.
@@ -1490,13 +1534,7 @@ async function generate(){
   }catch(err){
     console.error(err);
     logError("GENERATE",err);
-    if(AUDIO_BACKEND==="webgl" && /webgl|execution provider|operator|kernel|not supported/i.test(String(err?.message||err))){
-      setStatus("WebGL ist für dieses Piper-Modell auf diesem Safari nicht kompatibel: "+(err?.message||err),0);
-      try{localStorage.removeItem(RESUME_KEY)}catch(_){}
-      log("BACKEND","webgl incompatible - auto resume stopped",{message:err?.message||String(err)});
-    }else{
-      setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
-    }
+    setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
   }finally{
     generationRunning=false;
     els.generate.disabled=!els.text.value.trim();
@@ -1581,7 +1619,7 @@ els.loadBundled.addEventListener("click",async()=>{
     els.text.value=txt;
     persistText("bundled-text");
     updateTextState({save:false});
-    setStatus("Mittelalter-Text geladen und gespeichert.",els.progress.value);
+    setStatus("Beispieltext aus dem Online-Repository geladen und gespeichert.",els.progress.value);
     log("TEXT","bundled text loaded",{chars:txt.length});
   }catch(err){
     logError("bundled text",err);
@@ -1616,6 +1654,13 @@ els.clearLog.addEventListener("click",()=>{
 });
 
 restorePersistentState();
+if(IS_IOS_WEBKIT && [...els.modelSelect.options].some(o=>o.value===MOBILE_SAFE_MODEL)){
+  if(els.modelSelect.value!==MOBILE_SAFE_MODEL){
+    log("MOBILE","forcing Safari iOS safe voice",{from:els.modelSelect.value,to:MOBILE_SAFE_MODEL});
+  }
+  els.modelSelect.value=MOBILE_SAFE_MODEL;
+  storageSet(STORAGE.model,MOBILE_SAFE_MODEL);
+}
 updateTextState({save:false});
 
 setTimeout(()=>{
