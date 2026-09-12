@@ -672,7 +672,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.15");
+  const worker=new Worker("./phonemizer-worker.js?v=0.37");
   let seq=0;
   const pending=new Map();
 
