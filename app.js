@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.42";
+const LOG_VERSION = "0.43";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -136,7 +136,9 @@ const els = {
   fileInput:$("fileInput"), loadBundled:$("loadBundled"), clearText:$("clearText"), forgetSavedText:$("forgetSavedText"), saveState:$("saveState"),
   charCount:$("charCount"), sentencePause:$("sentencePause"),
   paragraphPause:$("paragraphPause"), bitrate:$("bitrate"), generate:$("generate"),
-  cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog")
+  cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog"),
+  computeMode:$("computeMode"), computeModeHint:$("computeModeHint"), hfEndpoint:$("hfEndpoint"), hfEndpointWrap:$("hfEndpointWrap"),
+  loadTestText:$("loadTestText")
 };
 
 const MODELS = {
@@ -331,6 +333,8 @@ let backgroundPaused=false;
 const IS_IOS_WEBKIT=/iPad|iPhone|iPod/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent);
 const AUDIO_BACKEND="wasm";
 const MOBILE_SAFE_MODEL="mobile_safe";
+const TEST_TEXT="don’t test this apple";
+
 
 const STORAGE = {
   text: "gnr:text:v1",
@@ -431,7 +435,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.42",{
+log("BOOT","App loaded v0.43",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -703,7 +707,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.42");
+  const worker=new Worker("./phonemizer-worker.js?v=0.43");
   let seq=0;
   const pending=new Map();
 
@@ -821,7 +825,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.42");
+  const worker=new Worker("./onnx-worker.js?v=0.43");
   let seq=0;
   let closed=false;
 
@@ -964,6 +968,16 @@ function splitLongSentence(s,maxLen){
   if(rest)out.push(rest); return out;
 }
 function makeChunks(text,maxLen=110){
+  // The built-in smoke test is deliberately split into four audio segments so
+  // it exercises phonemization, multiple persisted MP3 parts and final assembly.
+  if(cleanText(text)===TEST_TEXT){
+    return [
+      {text:"don’t",paragraphEnd:false},
+      {text:"test",paragraphEnd:false},
+      {text:"this",paragraphEnd:false},
+      {text:"apple",paragraphEnd:true}
+    ];
+  }
   // Smaller chunks are deliberately used on iPhone/Safari to reduce peak memory and long blocking calls.
   const paras=cleanText(text).split(/\n\s*\n/).filter(Boolean), chunks=[];
   for(const paraRaw of paras){
@@ -1049,7 +1063,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.42 START =====");
+  log("DIAG","===== DIAGNOSE v0.43 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1105,12 +1119,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.42 OK =====");
+    log("DIAG","===== DIAGNOSE v0.43 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.42 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.43 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1306,7 +1320,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.42 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.43 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1385,7 +1399,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.42 stores the large immutable phoneme matrix separately so the tiny
+    // v0.43 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1553,7 +1567,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.42: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.43: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1563,7 +1577,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.42-low-overhead"
+      speedMode:"v0.43-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1820,6 +1834,14 @@ els.computeMode?.addEventListener("change",()=>{
 });
 els.hfEndpoint?.addEventListener("change",()=>storageSet(STORAGE.hfEndpoint,normalizedHfEndpoint()));
 
+
+els.loadTestText?.addEventListener("click",()=>{
+  els.text.value=TEST_TEXT;
+  persistText("test-text");
+  updateTextState({save:false});
+  setStatus("Test-Text geladen: 4 Segmente werden zu einer MP3 zusammengeführt.",els.progress.value);
+  log("TEST","test text loaded",{text:TEST_TEXT,segments:4});
+});
 
 els.fileInput.addEventListener("change",async e=>{
   const f=e.target.files?.[0];
