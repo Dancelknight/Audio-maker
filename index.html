@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111111" />
   <title>German Neural Reader</title>
-  <link rel="stylesheet" href="./styles.css?v=0.35" />
+  <link rel="stylesheet" href="./styles.css?v=0.36" />
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.all.js"></script>
 </head>
@@ -13,8 +13,8 @@
   <main class="shell">
     <header>
       <div class="eyebrow">LOCAL · FREE · GERMAN TTS</div>
-      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.35</small></h1>
-      <p class="lede">Liest lange deutsche Texte mit Piper/Thorsten direkt im Browser vor und erzeugt eine zusammenhängende MP3.</p>
+      <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.36</small></h1>
+      <p class="lede">Liest lange deutsche Texte direkt im Browser vor und erzeugt eine zusammenhängende MP3. Für Safari auf iPhone/iPad mobil optimiert.</p>
     </header>
 
     <section class="card">
@@ -22,7 +22,8 @@
         <label>
           <span>Voice model</span>
           <select id="modelSelect">
-            <option value="medium" selected>Thorsten · Medium · ~63 MB</option>
+            <option value="mobile_safe" selected>Eva K · Mobile Safe · ~20.6 MB · iPhone/iPad</option>
+            <option value="medium">Thorsten · Medium · ~63 MB</option>
             <option value="high">Thorsten · High · ~114 MB (mehr Speicher)</option>
           </select>
         </label>
@@ -58,7 +59,7 @@
           TXT auswählen
           <input id="fileInput" type="file" accept=".txt,text/plain" hidden />
         </label>
-        <button id="loadBundled">Mittelalter-Text laden</button>
+        <button id="loadBundled">Beispieltext aus Online-Repository laden</button>
         <button id="clearText">Leeren</button>
         <button id="forgetSavedText">Gespeicherten Text löschen</button>
       </div>
@@ -107,7 +108,7 @@
       </div>
 
       <p class="hint">
-        Für lange Skripte auf dem iPhone: Safari im Vordergrund lassen und das Display während der Berechnung nicht sperren. v0.2 zeigt während jedes Abschnitts separat Phonemisierung und Audio-Berechnung an; dadurch sieht man sofort, ob Safari wirklich hängt.
+        Für lange Skripte auf iPhone/iPad ist der Mobile-Safe-Modus mit Eva K automatisch aktiv. Safari bitte im Vordergrund lassen und das Display während der Berechnung nicht sperren.
         Das Modell wird nach dem ersten Laden im Browser-Cache gespeichert. Neue Jobs verwenden standardmäßig 40 kbps; bereits laufende Jobs behalten automatisch ihre ursprüngliche Bitrate.
       </p>
     </section>
@@ -146,12 +147,12 @@
     <details class="card">
       <summary>Technische Hinweise</summary>
       <div class="detailsBody">
-        <p>Die Spracherzeugung läuft mit Piper ONNX lokal im Browser. Für die deutsche Phonemisierung wird Piper-WASM mit eSpeak-NG verwendet. Die MP3 wird im Browser mit lamejs erzeugt.</p>
+        <p>Die Spracherzeugung läuft mit Piper ONNX lokal im Browser. Auf iPhone/iPad wird automatisch das kleinere Eva-K-Mobile-Safe-Modell verwendet; auf stärkeren Geräten stehen zusätzlich Thorsten Medium und High zur Verfügung. Für die deutsche Phonemisierung wird Piper-WASM mit eSpeak-NG verwendet. Die MP3 wird im Browser mit lamejs erzeugt.</p>
         <p>Beim ersten Start werden Bibliotheken sowie das gewählte Sprachmodell aus dem Internet geladen. Der eingegebene Text wird nicht an einen TTS-Server geschickt.</p>
       </div>
     </details>
   </main>
 
-  <script type="module" src="./app.js?v=0.35"></script>
+  <script type="module" src="./app.js?v=0.36"></script>
 </body>
 </html>
