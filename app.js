@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.48";
+const LOG_VERSION = "0.49";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -119,13 +119,22 @@ document.addEventListener("visibilitychange", () => {
   backgroundPaused=document.visibilityState!=="visible";
   log("LIFECYCLE","visibilitychange",{visibility:document.visibilityState,backgroundPaused});
   if(!backgroundPaused){
-    try{
-      const resume=localStorage.getItem(RESUME_KEY);
-      if((els.computeMode?.value||"local")==="local" && resume && els.text.value.trim() && !generationRunning){
-        log("CHECKPOINT","resume on foreground",{jobKey:resume});
-        setTimeout(()=>generate(),250);
-      }
-    }catch(err){logError("foreground resume",err)}
+    (async()=>{
+      try{
+        const resume=localStorage.getItem(RESUME_KEY);
+        if((els.computeMode?.value||"local")==="local" && resume && els.text.value.trim() && !generationRunning){
+          const matches=await resumeMatchesCurrentText(resume,els.text.value);
+          if(matches){
+            log("CHECKPOINT","resume on foreground",{jobKey:resume});
+            setTimeout(()=>generate(),250);
+          }else{
+            localStorage.removeItem(RESUME_KEY);
+            log("CHECKPOINT","stale foreground resume detached",{jobKey:resume,chars:els.text.value.length});
+            discoverRecoverableJob();
+          }
+        }
+      }catch(err){logError("foreground resume",err)}
+    })();
   }
 });
 
@@ -440,7 +449,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.48",{
+log("BOOT","App loaded v0.49",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -583,6 +592,55 @@ async function saveJobSource(jobKey,text){
 async function loadJobSource(jobKey){
   const rec=await jobGet(`${jobKey}:source`);
   return typeof rec?.text==="string" ? rec.text : null;
+}
+
+async function fetchBundledText(){
+  const urls=[
+    "./Mittelalter_Vorlesetext.txt?v="+encodeURIComponent(LOG_VERSION),
+    "https://raw.githubusercontent.com/Dancelknight/Audio-maker/main/Mittelalter_Vorlesetext.txt"
+  ];
+  let lastErr=null;
+  for(const url of urls){
+    try{
+      const r=await fetch(url,{cache:"no-store"});
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const txt=await r.text();
+      if(!txt.trim()) throw new Error("Leere Textdatei");
+      log("TEXT","repository text fetched",{url,chars:txt.length});
+      return txt;
+    }catch(err){
+      lastErr=err;
+      logError("repository text fetch "+url,err);
+    }
+  }
+  throw lastErr||new Error("Repository-Text konnte nicht geladen werden.");
+}
+
+async function resumeMatchesCurrentText(jobKey,text){
+  if(!jobKey || !text?.trim()) return false;
+
+  // Newer jobs persist their exact source text.
+  try{
+    const source=await loadJobSource(jobKey);
+    if(source) return source.trim()===text.trim();
+  }catch(err){ logError("resume source check",err); }
+
+  // Backward compatibility for the original 57,141-character repository job.
+  try{
+    const bundled=await fetchBundledText();
+    if(bundled.trim()!==text.trim()) return false;
+    const job=await jobGet(jobKey);
+    if(!job) return false;
+    const chunks=makeChunks(bundled,110);
+    if(Number(job.total)!==chunks.length) return false;
+    const bitrate=Number(job.bitrate||40);
+    const key=await makeJobKey(bundled,chunks,bitrate);
+    const legacy=await makeLegacyJobKey(bundled,chunks);
+    return jobKey===key || jobKey===legacy;
+  }catch(err){
+    logError("legacy resume compatibility",err);
+    return false;
+  }
 }
 async function listMainJobs(){
   const db=await openJobDB();
@@ -742,7 +800,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.48");
+  const worker=new Worker("./phonemizer-worker.js?v=0.49");
   let seq=0;
   const pending=new Map();
 
@@ -860,7 +918,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.48");
+  const worker=new Worker("./onnx-worker.js?v=0.49");
   let seq=0;
   let closed=false;
 
@@ -1099,7 +1157,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.48 START =====");
+  log("DIAG","===== DIAGNOSE v0.49 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1155,12 +1213,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.48 OK =====");
+    log("DIAG","===== DIAGNOSE v0.49 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.48 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.49 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1369,7 +1427,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.48 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.49 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1452,7 +1510,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.48: completed jobs keep one final MP3 record. Never re-enter the
+    // v0.49: completed jobs keep one final MP3 record. Never re-enter the
     // repair path merely because segment cleanup/reload happened later.
     if(checkpoint?.phase==="complete"){
       const finalRec=await jobGet(`${jobKey}:audio:final`);
@@ -1475,7 +1533,7 @@ async function generate(){
       log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
     }
 
-    // v0.48 stores the large immutable phoneme matrix separately so the tiny
+    // v0.49 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1643,7 +1701,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.48: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.49: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1653,7 +1711,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.48-low-overhead"
+      speedMode:"v0.49-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1841,7 +1899,7 @@ async function generate(){
     els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
-    // v0.48 crash-safe completion:
+    // v0.49 crash-safe completion:
     // 1) persist the final MP3,
     // 2) mark the parent complete,
     // 3) clear auto-resume.
@@ -1934,9 +1992,8 @@ async function discoverRecoverableJob(){
     // older versions did not persist the source text separately.
     if(!candidate){
       try{
-        const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
-        if(r.ok){
-          const bundled=await r.text();
+        const bundled=await fetchBundledText();
+        if(bundled){
           const oldChunks=makeChunks(bundled,110);
           for(const j of jobs){
             if(Number(j.total)!==oldChunks.length) continue;
@@ -2068,19 +2125,22 @@ els.fileInput.addEventListener("change",async e=>{
 });
 
 els.loadBundled.addEventListener("click",async()=>{
+  if(generationRunning){
+    setStatus("Ein Job läuft gerade. Bitte zuerst abbrechen oder fertig laufen lassen.",els.progress.value);
+    return;
+  }
   try{
-    const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
-    if(!r.ok)throw new Error(`HTTP ${r.status}`);
-    const txt=await r.text();
+    const txt=await fetchBundledText();
     detachActiveResume("bundled-text");
     els.text.value=txt;
     persistText("bundled-text");
     updateTextState({save:false});
-    setStatus("Beispieltext aus dem Online-Repository geladen und gespeichert.",els.progress.value);
+    setStatus(`Repository-Text geladen und gespeichert · ${txt.length.toLocaleString("de-DE")} Zeichen.`,els.progress.value);
     log("TEXT","bundled text loaded",{chars:txt.length});
+    discoverRecoverableJob();
   }catch(err){
     logError("bundled text",err);
-    setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0);
+    setStatus("Repository-Text konnte nicht geladen werden: "+(err?.message||err),0);
   }
 });
 
@@ -2091,8 +2151,7 @@ els.recoverJob?.addEventListener("click",async()=>{
     if(!jobKey) throw new Error("Kein wiederherstellbarer Job gefunden.");
     let source=await loadJobSource(jobKey);
     if(!source){
-      const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
-      if(r.ok) source=await r.text();
+      source=await fetchBundledText();
     }
     if(!source) throw new Error("Quelltext des alten Jobs konnte nicht wiederhergestellt werden.");
     els.text.value=source;
@@ -2142,16 +2201,26 @@ if(IS_IOS_WEBKIT && [...els.modelSelect.options].some(o=>o.value===MOBILE_SAFE_M
   els.modelSelect.value=MOBILE_SAFE_MODEL;
   storageSet(STORAGE.model,MOBILE_SAFE_MODEL);
 }
+setGenerationUiLocked(false);
 updateTextState({save:false});
 updateComputeModeUI();
 discoverRecoverableJob();
 
-setTimeout(()=>{
+setTimeout(async()=>{
   try{
     const resume=localStorage.getItem(RESUME_KEY);
     if((els.computeMode?.value||"local")==="local" && resume && els.text.value.trim() && !generationRunning && document.visibilityState==="visible"){
-      log("CHECKPOINT","auto resume requested",{jobKey:resume});
-      generate();
+      const matches=await resumeMatchesCurrentText(resume,els.text.value);
+      if(matches){
+        log("CHECKPOINT","auto resume requested",{jobKey:resume});
+        generate();
+      }else{
+        localStorage.removeItem(RESUME_KEY);
+        log("CHECKPOINT","stale startup resume detached",{jobKey:resume,chars:els.text.value.length});
+        setGenerationUiLocked(false);
+        updateComputeModeUI();
+        discoverRecoverableJob();
+      }
     }
   }catch(err){logError("auto resume",err)}
 },700);
