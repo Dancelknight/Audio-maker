@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.36";
+const LOG_VERSION = "0.37";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -400,7 +400,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.36",{
+log("BOOT","App loaded v0.37",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -531,6 +531,20 @@ async function savePhonemes(jobKey,phonemeBatches){
 async function loadPhonemes(jobKey){
   const rec=await jobGet(`${jobKey}:phonemes`);
   return Array.isArray(rec?.phonemeBatches)?rec.phonemeBatches:null;
+}
+
+async function resetJobData(jobKey,total,reason="reset"){
+  log("CHECKPOINT","reset job data start",{jobKey,total,reason});
+  for(let i=0;i<Number(total||0);i++){
+    try{ await jobDelete(`${jobKey}:audio:${i}`); }catch(err){ logError(`reset audio ${i+1}`,err); }
+    if((i+1)%50===0) await sleep(0);
+  }
+  try{ await jobDelete(`${jobKey}:phonemes`); }catch(err){ logError("reset phonemes",err); }
+  try{ await jobDelete(jobKey); }catch(err){ logError("reset parent job",err); }
+  try{
+    if(localStorage.getItem(RESUME_KEY)===jobKey) localStorage.removeItem(RESUME_KEY);
+  }catch(_){}
+  log("CHECKPOINT","reset job data done",{jobKey,reason});
 }
 
 async function jobDelete(key){
@@ -757,7 +771,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.36");
+  const worker=new Worker("./onnx-worker.js?v=0.37");
   let seq=0;
   let closed=false;
 
@@ -985,7 +999,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.36 START =====");
+  log("DIAG","===== DIAGNOSE v0.37 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1041,12 +1055,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.36 OK =====");
+    log("DIAG","===== DIAGNOSE v0.37 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.36 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.37 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1123,8 +1137,26 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // First trust our persisted resume pointer only when it belongs to the
-    // currently selected mobile-safe job. Never splice old Thorsten audio into Eva.
+    // v0.37 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // Eva has a different phoneme-id table, so that job must be discarded and
+    // phonemized again from scratch. The old Thorsten job uses a different key
+    // and is deliberately left untouched.
+    if(mobileSafeJob){
+      try{
+        const existingEva=await jobGet(newKey);
+        const evaPhonemes=await loadPhonemes(newKey);
+        const looksLikeV036Migration=!!existingEva?.migratedPhonemesFrom ||
+          (!!existingEva && existingEva.phase==="audio" && Number(existingEva.audioDone||0)<=10 && Array.isArray(evaPhonemes));
+        if(looksLikeV036Migration){
+          log("MOBILE","invalid v0.36 Eva phonemes detected",{jobKey:newKey,audioDone:existingEva?.audioDone||0});
+          await resetJobData(newKey,chunks.length,"v0.36-thorsten-phonemes-in-eva");
+        }
+      }catch(err){
+        logError("mobile v0.36 reset",err);
+      }
+    }
+
+    // First trust our persisted resume pointer if it belongs to the current job.
     if(resumeKey && (!mobileSafeJob || resumeKey===newKey)){
       try{
         const resumed=await jobGet(resumeKey);
@@ -1165,7 +1197,7 @@ async function generate(){
       jobKey=newKey;
       checkpoint=await jobGet(jobKey);
 
-      // v0.36 mobile migration: reuse immutable German phoneme IDs from the most
+      // v0.37 mobile migration: reuse immutable German phoneme IDs from the most
       // advanced old job, but start audio again at chunk 1 so one MP3 never mixes voices.
       if(!checkpoint && mobileSafeJob){
         try{
@@ -1209,7 +1241,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.36 stores the large immutable phoneme matrix separately so the tiny
+    // v0.37 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1343,9 +1375,9 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.36: iPhone/iPad Safari stays on WASM but uses the much smaller
-    // Eva K x_low model. This avoids WebGL's int64 limitation and sharply lowers
-    // model memory versus Thorsten Medium.
+    // v0.37: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
+    // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
     const lifecycleStartAudioDone=audioDone;
     log("BACKEND","audio execution provider selected",{backend:AUDIO_BACKEND,iosWebKit:IS_IOS_WEBKIT});
