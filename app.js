@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.40";
+const LOG_VERSION = "0.41";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -13,6 +13,7 @@ function safeJson(v){
   try { return JSON.stringify(v); } catch(_) { return String(v); }
 }
 let persistLogTimer=null;
+let debugRenderTimer=null;
 function persistLogsSoon(){
   if(persistLogTimer) return;
   persistLogTimer=setTimeout(()=>{
@@ -20,14 +21,35 @@ function persistLogsSoon(){
     try{ localStorage.setItem(PERSISTENT_LOG_KEY, JSON.stringify(logLines.slice(-120))); }catch(_){}
   },1200);
 }
+function renderDebugLogNow(){
+  if(debugRenderTimer){
+    clearTimeout(debugRenderTimer);
+    debugRenderTimer=null;
+  }
+  const box=document.getElementById("debugLog");
+  if(box){
+    box.value=logLines.join("\n");
+    box.scrollTop=box.scrollHeight;
+  }
+}
+function renderDebugLogSoon(){
+  if(debugRenderTimer) return;
+  debugRenderTimer=setTimeout(()=>{
+    debugRenderTimer=null;
+    renderDebugLogNow();
+  },900);
+}
 function log(type, message, data){
   const line = `[${nowISO()}] [${type}] ${message}` + (data !== undefined ? ` | ${typeof data === "string" ? data : safeJson(data)}` : "");
   logLines.push(line);
   if(logLines.length > 1200) logLines.shift();
   persistLogsSoon();
-  const box = document.getElementById("debugLog");
-  if(box){ box.value = logLines.join("\n"); box.scrollTop = box.scrollHeight; }
-  try { console.log(line); } catch(_) {}
+  renderDebugLogSoon();
+  // In-app diagnostics keep every line. Avoid expensive Safari console traffic
+  // for high-frequency ONNX/status events unless it is actually an error.
+  if(type==="ERROR" || type==="WINDOW_ERROR" || type==="CRASH_FORENSICS"){
+    try { console.log(line); } catch(_) {}
+  }
 }
 function logError(scope, err){
   log("ERROR", scope, {
@@ -386,6 +408,7 @@ function restorePersistentState(){
 }
 
 function showDebugLog(){
+  renderDebugLogNow();
   requestAnimationFrame(()=>{
     els.debugLog?.scrollIntoView({behavior:"smooth",block:"start"});
     setTimeout(()=>{
@@ -400,7 +423,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.40",{
+log("BOOT","App loaded v0.41",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -672,7 +695,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.40");
+  const worker=new Worker("./phonemizer-worker.js?v=0.41");
   let seq=0;
   const pending=new Map();
 
@@ -790,7 +813,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.40");
+  const worker=new Worker("./onnx-worker.js?v=0.41");
   let seq=0;
   let closed=false;
 
@@ -1018,7 +1041,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.40 START =====");
+  log("DIAG","===== DIAGNOSE v0.41 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1074,12 +1097,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.40 OK =====");
+    log("DIAG","===== DIAGNOSE v0.41 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.40 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.41 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1119,7 +1142,7 @@ async function encodeAndPersistAudioChunk({jobKey,index,chunk,ids,speed,sPause,p
   clearCrashBreadcrumb("mp3-encoded");
   log("CHUNK","segment encoded",{index:index+1,parts:segParts.length,bytes:segmentBlob.size});
 
-  await sleep(80);
+  await sleep(IS_IOS_WEBKIT?8:30);
   await waitUntilVisible();
   persistCrashBreadcrumb("indexedDB:audioSave:start",{chunkIndex:index+1,segmentBytes:segmentBlob.size,memory:memorySnapshot()});
   await jobPutAudioBlob(`${jobKey}:audio:${index}`,jobKey,index,segmentBlob);
@@ -1144,19 +1167,23 @@ async function generate(){
     els.preview.disabled=true;
     els.result.classList.add("hidden");
 
-    const chunks=makeChunks(txt);
+    const resumeKey=localStorage.getItem(RESUME_KEY);
+    // Preserve the exact old 110-char segmentation for any running job so an
+    // update never invalidates checkpoints. New Eva Mobile Safe jobs use 160 chars.
+    const desiredChunkLen=(IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL && !resumeKey) ? 160 : 110;
+    const chunks=makeChunks(txt,desiredChunkLen);
     if(!chunks.length)throw new Error("Kein lesbarer Text gefunden.");
+    log("SPEED","chunk policy",{maxLen:desiredChunkLen,chunks:chunks.length,resuming:!!resumeKey});
 
     const selectedBitrate=Number(els.bitrate?.value||40);
     const legacyKey=await makeLegacyJobKey(txt,chunks);
     const newKey=await makeJobKey(txt,chunks,selectedBitrate);
-    const resumeKey=localStorage.getItem(RESUME_KEY);
 
     let checkpoint=null;
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.40 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.41 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1235,7 +1262,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.40 stores the large immutable phoneme matrix separately so the tiny
+    // v0.41 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1403,7 +1430,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.40: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.41: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1412,7 +1439,8 @@ async function generate(){
       backend:AUDIO_BACKEND,
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
-      sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6"
+      sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
+      speedMode:"v0.41-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1503,7 +1531,7 @@ async function generate(){
         return;
       }
 
-      await sleep(100);
+      await sleep(mobileSafeJob?8:60);
       }
     }finally{
       if(audioClient){
@@ -1563,8 +1591,8 @@ async function generate(){
 
           log("REPAIR","segment restored",{index:i+1});
 
-          // Keep the repair worker alive too; avoid repeated WASM reinitialization.
-          await sleep(100);
+          // Yield briefly without adding a large per-segment delay.
+          await sleep(mobileSafeJob?8:50);
         }
       }finally{
         if(repairClient) repairClient.close();
