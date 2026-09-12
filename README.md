@@ -112,3 +112,18 @@ Die Diagnose prüft jetzt einzeln:
 8. Thorsten ONNX + Audio
 
 Jeder Schritt landet vollständig im kopierbaren Diagnose-Log.
+
+
+## Lizenz-Audit 2026
+
+Die Anwendung kann grundsätzlich auch kommerziell betrieben werden. Es gibt jedoch Copyleft-Komponenten, die vor einem offiziellen Launch sauber dokumentiert werden müssen:
+
+- eSpeak NG: GPL-3.0-or-later
+- piper-tts 1.3.0 im Colab-/Server-Prototyp: GPL-3.0-or-later
+- lamejs 1.2.1: LGPL-3.0
+- ONNX Runtime Web: MIT
+- @diffusionstudio/piper-wasm: npm-Paket MIT, enthält/erzeugt jedoch Komponenten auf Basis von eSpeak NG
+- Thorsten-Datensatz: CC0
+- Eva-K-Trainingsdatensatz: M-AILABS-Lizenz mit kommerzieller Nutzung
+
+Details stehen in `LICENSES.md`.
