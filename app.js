@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.52";
+const LOG_VERSION = "0.53";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -457,7 +457,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.52",{
+log("BOOT","App loaded v0.53",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -645,6 +645,28 @@ async function savePhonemes(jobKey,phonemeBatches){
 async function loadPhonemes(jobKey){
   const rec=await jobGet(`${jobKey}:phonemes`);
   return Array.isArray(rec?.phonemeBatches)?rec.phonemeBatches:null;
+}
+
+async function assembleExistingSegments(jobKey,total){
+  const parts=[];
+  let totalBytes=0;
+  for(let i=0;i<Number(total||0);i++){
+    const seg=await jobGet(`${jobKey}:audio:${i}`);
+    if(!seg?.blob) throw new Error(`MP3-Segment ${i+1} fehlt.`);
+    parts.push(seg.blob);
+    totalBytes+=seg.blob.size;
+    if((i+1)%100===0) await sleep(0);
+  }
+  return {blob:new Blob(parts,{type:"audio/mpeg"}),totalBytes,segments:parts.length};
+}
+
+function showFinalBlob(blob){
+  if(resultUrl) URL.revokeObjectURL(resultUrl);
+  resultUrl=URL.createObjectURL(blob);
+  els.audio.src=resultUrl;
+  els.download.href=resultUrl;
+  els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
+  els.result.classList.remove("hidden");
 }
 
 async function saveJobSource(jobKey,text){
@@ -1222,7 +1244,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.52 START =====");
+  log("DIAG","===== DIAGNOSE v0.53 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1278,12 +1300,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.52 OK =====");
+    log("DIAG","===== DIAGNOSE v0.53 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.52 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.53 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1492,7 +1514,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.52 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.53 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1575,30 +1597,51 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.52: completed jobs keep one final MP3 record. Never re-enter the
-    // repair path merely because segment cleanup/reload happened later.
-    if(checkpoint?.phase==="complete"){
-      const finalRec=await jobGet(`${jobKey}:audio:final`);
-      if(finalRec?.blob){
-        if(resultUrl) URL.revokeObjectURL(resultUrl);
-        resultUrl=URL.createObjectURL(finalRec.blob);
-        els.audio.src=resultUrl;
-        els.download.href=resultUrl;
-        els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
-        els.result.classList.remove("hidden");
+    // v0.53: once all segment blobs are known to exist, never synthesize again.
+    // On iPhone we deliberately do NOT persist a second 20+ MB "final" blob,
+    // because that extra IndexedDB write was the crash point after 665/665.
+    if(checkpoint?.phase==="complete" || checkpoint?.phase==="segments_complete"){
+      try{
+        const finalRec=await jobGet(`${jobKey}:audio:final`);
+        if(finalRec?.blob){
+          showFinalBlob(finalRec.blob);
+          localStorage.removeItem(RESUME_KEY);
+          setStatus("Fertig. Gespeicherte MP3 wurde wiederhergestellt.",1,"100 %");
+          log("FINAL","completed MP3 restored",{jobKey,bytes:finalRec.blob.size,source:"final-record"});
+          return;
+        }
+
+        setStatus("Alle Segmente sind fertig. MP3 wird wieder zusammengesetzt …",.995,"99 %");
+        log("FINAL","rebuild completed job from segments start",{jobKey,total:chunks.length,phase:checkpoint.phase});
+        const rebuilt=await assembleExistingSegments(jobKey,chunks.length);
+        showFinalBlob(rebuilt.blob);
+
+        await jobPut({
+          key:jobKey,
+          done:chunks.length,
+          total:chunks.length,
+          phase:"complete",
+          audioDone:chunks.length,
+          bitrate:mp3Bitrate,
+          phonemeModelKey:els.modelSelect.value,
+          finalBytes:rebuilt.blob.size,
+          completedAt:checkpoint?.completedAt||Date.now(),
+          updatedAt:Date.now()
+        });
         localStorage.removeItem(RESUME_KEY);
-        setStatus("Fertig. Gespeicherte MP3 wurde wiederhergestellt.",1,"100 %");
-        log("FINAL","completed MP3 restored",{jobKey,bytes:finalRec.blob.size});
+        clearCrashBreadcrumb("job-complete-rebuilt");
+        setStatus("Fertig. MP3 aus vorhandenen Segmenten wiederhergestellt.",1,"100 %");
+        log("FINAL","completed MP3 rebuilt from segments",{jobKey,bytes:rebuilt.blob.size,segments:rebuilt.segments});
         return;
+      }catch(err){
+        logError("rebuild completed job",err);
+        phase="audio";
+        audioDone=Number(checkpoint?.audioDone||0);
+        log("FINAL","completed marker could not rebuild; verify segments",{jobKey,audioDone});
       }
-      // A complete marker without a final blob is inconsistent; fall back to
-      // normal verification/repair rather than pretending the file exists.
-      phase="audio";
-      audioDone=Number(checkpoint?.audioDone||0);
-      log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
     }
 
-    // v0.52 stores the large immutable phoneme matrix separately so the tiny
+    // v0.53 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1766,7 +1809,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.52: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.53: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1776,7 +1819,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.52-low-overhead"
+      speedMode:"v0.53-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1942,43 +1985,33 @@ async function generate(){
       }
     }
 
+    // Mark the lightweight parent FIRST. From this point on, a reload must
+    // never cause speech synthesis again: all segment blobs have been verified.
+    await jobPut({
+      key:jobKey,
+      done:chunks.length,
+      total:chunks.length,
+      phase:"segments_complete",
+      audioDone:chunks.length,
+      bitrate:mp3Bitrate,
+      phonemeModelKey:els.modelSelect.value,
+      completedAt:Date.now(),
+      updatedAt:Date.now()
+    });
+    log("FINAL","segments marked complete before assembly",{jobKey,segments:chunks.length});
+
     setStatus("Alle Segmente vorhanden. Eine MP3 wird zusammengesetzt …",.995,"99 %");
     log("FINAL","assembly start",{segments:chunks.length,repaired:missing.length});
 
-    const finalParts=[];
-    let totalBytes=0;
-    for(let i=0;i<chunks.length;i++){
-      const seg=await jobGet(`${jobKey}:audio:${i}`);
-      if(!seg?.blob) throw new Error(`MP3-Segment ${i+1} fehlt auch nach Reparatur.`);
-      finalParts.push(seg.blob);
-      totalBytes+=seg.blob.size;
-    }
+    const assembled=await assembleExistingSegments(jobKey,chunks.length);
+    const blob=assembled.blob;
+    log("FINAL","assembly done",{segments:assembled.segments,totalBytes:assembled.totalBytes,blobBytes:blob.size});
 
-    const blob=new Blob(finalParts,{type:"audio/mpeg"});
-    log("FINAL","assembly done",{segments:finalParts.length,totalBytes,blobBytes:blob.size});
+    showFinalBlob(blob);
 
-    if(resultUrl)URL.revokeObjectURL(resultUrl);
-    resultUrl=URL.createObjectURL(blob);
-    els.audio.src=resultUrl;
-    els.download.href=resultUrl;
-    els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
-    els.result.classList.remove("hidden");
-
-    // v0.52 crash-safe completion:
-    // 1) persist the final MP3,
-    // 2) mark the parent complete,
-    // 3) clear auto-resume.
-    // Do NOT delete the segment records here. Older code deleted them one by
-    // one; if Safari died mid-cleanup, audioDone stayed at 665 while hundreds
-    // of blobs were already gone, which triggered a huge false "repair" pass.
-    await jobPut({
-      key:`${jobKey}:audio:final`,
-      parent:jobKey,
-      index:-1,
-      blob,
-      bytes:blob.size,
-      updatedAt:Date.now()
-    });
+    // Only persist the tiny parent marker. Keeping all segment blobs is enough
+    // to rebuild the MP3 after a reload in seconds and avoids duplicating a
+    // 20+ MB Blob inside Safari's IndexedDB.
     await jobPut({
       key:jobKey,
       done:chunks.length,
@@ -1993,7 +2026,7 @@ async function generate(){
     });
     localStorage.removeItem(RESUME_KEY);
     clearCrashBreadcrumb("job-complete");
-    log("FINAL","job marked complete; segments retained",{jobKey,segments:chunks.length,blobBytes:blob.size});
+    log("FINAL","job marked complete; final blob not duplicated",{jobKey,segments:chunks.length,blobBytes:blob.size});
 
     setStatus("Fertig. Eine komplette MP3 ist bereit.",1,"100 %");
   }catch(err){
@@ -2040,8 +2073,16 @@ async function discoverRecoverableJob(){
   if(!els.recoverJob) return;
   try{
     const jobs=(await listMainJobs())
-      .filter(j=>j.phase!=="complete" && (Number(j.audioDone||0)>0 || Number(j.done||0)>0))
-      .sort((a,b)=>Number(b.updatedAt||0)-Number(a.updatedAt||0));
+      .filter(j=>Number(j.total||0)>0 && (Number(j.audioDone||0)>0 || Number(j.done||0)>0 || j.phase==="complete" || j.phase==="segments_complete"))
+      .sort((a,b)=>{
+        const score=j=>{
+          const total=Math.max(1,Number(j.total||1));
+          const ratio=Math.max(Number(j.audioDone||0),Number(j.done||0))/total;
+          const complete=(j.phase==="complete"||j.phase==="segments_complete")?1000000:0;
+          return complete+ratio*100000+Number(j.updatedAt||0)/1e13;
+        };
+        return score(b)-score(a);
+      });
     if(!jobs.length){
       els.recoverJob.hidden=true;
       return;
@@ -2084,7 +2125,10 @@ async function discoverRecoverableJob(){
     els.recoverJob.hidden=false;
     els.recoverJob.dataset.jobKey=candidate.key;
     els.recoverJob.dataset.sourceKey=`${candidate.key}:source`;
-    els.recoverJob.textContent=`Alten Job fortsetzen · ${Number(candidate.audioDone||0)}/${Number(candidate.total||0)}`;
+    els.recoverJob.textContent=
+      (candidate.phase==="complete"||candidate.phase==="segments_complete")
+        ? `Fertige MP3 wiederherstellen · ${Number(candidate.total||0)} Segmente`
+        : `Alten Job fortsetzen · ${Number(candidate.audioDone||0)}/${Number(candidate.total||0)}`;
     log("CHECKPOINT","recoverable job found",{jobKey:candidate.key,phase:candidate.phase,audioDone:candidate.audioDone,total:candidate.total,chars:source.length});
   }catch(err){
     logError("discover recoverable job",err);
