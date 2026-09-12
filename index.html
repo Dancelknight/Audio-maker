@@ -14,7 +14,7 @@
     <header>
       <div class="eyebrow">LOKAL · KOSTENLOS · DEUTSCHE SPRACHAUSGABE</div>
       <h1>German Neural Reader <small style="font-size:.28em;vertical-align:top;color:#777">v0.53</small></h1>
-      <p class="lede">Liest lange deutsche Texte direkt im Browser vor und erzeugt eine zusammenhängende MP3. Für Safari auf iPhone/iPad mobil optimiert.</p>
+      <p class="lede">Wandelt lange deutsche Texte in eine zusammenhängende MP3 um. Für Safari auf iPhone/iPad mobil optimiert. Eine direkte Vorlesefunktion im Browser ist für später denkbar.</p>
       <p class="hint" style="margin-top:10px"><strong>Empfehlung:</strong> Bitte zuerst mit dem Test-Text ausprobieren. Er wird absichtlich in mehrere Segmente geteilt und anschließend wieder zu einer MP3 zusammengeführt.</p>
     </header>
 
@@ -30,7 +30,7 @@
           <select id="computeMode">
             <option value="local" selected>Lokal auf diesem Gerät · privat</option>
             <option value="hf" disabled>Hugging Face Space · extern · noch nicht getestet</option>
-            <option value="colab">Google Colab · extern</option>
+            <option value="colab" disabled>Google Colab · extern · demnächst</option>
           </select>
         </label>
         <label id="hfEndpointWrap" style="display:none">
@@ -39,7 +39,7 @@
         </label>
       </div>
       <p id="computeModeHint" class="hint">
-        Lokal: Text bleibt auf dem Gerät. Extern: Text wird zur Berechnung an den gewählten Dienst gesendet.
+        Lokal: Text bleibt auf dem Gerät. Externe Berechnung ist vorbereitet, aber derzeit noch deaktiviert.
       </p>
     </section>
 
@@ -176,7 +176,7 @@
     <details class="card">
       <summary>Technische Hinweise</summary>
       <div class="detailsBody">
-        <p>Die Spracherzeugung läuft mit Piper ONNX lokal im Browser. Auf iPhone/iPad wird automatisch das kleinere Eva-K-Mobile-Safe-Modell verwendet; auf stärkeren Geräten stehen zusätzlich Thorsten Medium und High zur Verfügung. Für die deutsche Phonemisierung wird Piper-WASM mit eSpeak-NG verwendet. Die MP3 wird im Browser mit lamejs erzeugt.</p>
+        <p>Die MP3-Erzeugung erfolgt derzeit lokal im Browser mit Piper ONNX. Auf iPhone/iPad wird automatisch das kleinere Eva-K-Mobile-Safe-Modell verwendet; auf stärkeren Geräten stehen zusätzlich Thorsten Medium und High zur Verfügung. Für die deutsche Phonemisierung wird Piper-WASM mit eSpeak-NG verwendet. Eine direkte Vorlesefunktion im Browser ist als spätere Erweiterung denkbar.</p>
         <p>Beim ersten Start werden Bibliotheken sowie das gewählte Sprachmodell aus dem Internet geladen. Der eingegebene Text wird nicht an einen TTS-Server geschickt.</p>
       </div>
     </details>
