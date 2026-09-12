@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.33";
+const LOG_VERSION = "0.34";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -392,7 +392,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.33",{
+log("BOOT","App loaded v0.34",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -746,7 +746,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.33");
+  const worker=new Worker("./onnx-worker.js?v=0.34");
   let seq=0;
   let closed=false;
 
@@ -852,6 +852,12 @@ function createOnnxAudioClient(){
       }
 
       return {audio,sampleRate:result.sampleRate||22050};
+    },
+    hardTerminate(){
+      if(closed) return;
+      closed=true;
+      try{worker.terminate()}catch(_){}
+      log("ONNX_WORKER","hard terminated");
     },
     close(){
       if(closed) return;
@@ -963,7 +969,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.33 START =====");
+  log("DIAG","===== DIAGNOSE v0.34 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1019,12 +1025,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.33 OK =====");
+    log("DIAG","===== DIAGNOSE v0.34 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.33 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.34 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1140,7 +1146,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.33 were always encoded at 96 kbps.
+    // Jobs created before bitrate-aware checkpoints may have been encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1148,7 +1154,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.33 stores the large immutable phoneme matrix separately so the tiny
+    // v0.34 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1282,7 +1288,11 @@ async function generate(){
       await sleep(700);
     }
 
-    // Audio generation runs exclusively in one worker; only its ONNX session is periodically recycled.
+    // Audio generation runs in short page lifecycles.
+    // After 6 completed chunks we intentionally reload the whole page to reset
+    // Safari/WebKit/WASM memory before iOS can kill the WebContent process.
+    const AUDIO_CHUNKS_PER_LIFECYCLE=6;
+    const lifecycleStartAudioDone=audioDone;
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
@@ -1304,7 +1314,7 @@ async function generate(){
 
       if(!audioClient){
         audioClient=createOnnxAudioClient();
-        log("ONNX_WORKER","persistent worker start",{from:i+1,to:chunks.length,mode:"single-session"});
+        log("ONNX_WORKER","lifecycle worker start",{from:i+1,to:Math.min(i+AUDIO_CHUNKS_PER_LIFECYCLE,chunks.length),mode:"controlled-page-reload"});
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
@@ -1334,15 +1344,39 @@ async function generate(){
         );
       }
 
-      // Keep one ONNX/WASM session alive for the whole audio phase.
-      // On iOS Safari, repeatedly creating/terminating WASM workers can retain
-      // compiled memory and trigger WebContent process crashes.
+      const chunksThisLifecycle=audioDone-lifecycleStartAudioDone;
+      if(audioDone<chunks.length && chunksThisLifecycle>=AUDIO_CHUNKS_PER_LIFECYCLE){
+        localStorage.setItem(RESUME_KEY,jobKey);
+        clearCrashBreadcrumb("controlled-audio-reload");
+        setStatus(
+          `Speicher-Reset nach ${audioDone}/${chunks.length} – wird automatisch fortgesetzt …`,
+          .35+(audioDone/chunks.length)*.64,
+          `${Math.round((.35+(audioDone/chunks.length)*.64)*100)} %`
+        );
+        log("CHECKPOINT","controlled reload audio",{
+          jobKey,
+          audioDone,
+          total:chunks.length,
+          chunksThisLifecycle
+        });
+        if(audioClient){
+          audioClient.hardTerminate();
+          audioClient=null;
+        }
+        try{
+          localStorage.setItem(PERSISTENT_LOG_KEY,JSON.stringify(logLines.slice(-120)));
+        }catch(_){}
+        await sleep(300);
+        location.reload();
+        return;
+      }
+
       await sleep(100);
       }
     }finally{
       if(audioClient){
         audioClient.close();
-        log("ONNX_WORKER","persistent worker closed");
+        log("ONNX_WORKER","lifecycle worker closed");
       }
     }
 
