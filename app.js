@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.55";
+const LOG_VERSION = "0.56";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -400,7 +400,17 @@ function restorePersistentState(){
       if(savedText) log("STORAGE","text restored from backup",{chars:savedText.length});
     }catch(err){ logError("backup restore",err); }
   }
-  if(savedText){
+  const looksLikeLegacyBundledText =
+    savedText.length===57141 &&
+    savedText.startsWith("Vorlesung 1 - Einleitung") &&
+    savedText.includes("ancilla theologiae");
+
+  if(looksLikeLegacyBundledText){
+    savedText = TEST_TEXT;
+    els.text.value = TEST_TEXT;
+    storageSet(STORAGE.text, TEST_TEXT);
+    log("STORAGE","legacy bundled text replaced with default Easter-egg text",{chars:TEST_TEXT.length});
+  }else if(savedText){
     els.text.value = savedText;
     log("STORAGE","text restored",{chars:savedText.length});
   }else{
@@ -461,7 +471,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.55",{
+log("BOOT","App loaded v0.56",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -1248,7 +1258,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.55 START =====");
+  log("DIAG","===== DIAGNOSE v0.56 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1304,12 +1314,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.55 OK =====");
+    log("DIAG","===== DIAGNOSE v0.56 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.55 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.56 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1518,7 +1528,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.55 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.56 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1601,7 +1611,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.55: once all segment blobs are known to exist, never synthesize again.
+    // v0.56: once all segment blobs are known to exist, never synthesize again.
     // On iPhone we deliberately do NOT persist a second 20+ MB "final" blob,
     // because that extra IndexedDB write was the crash point after 665/665.
     if(checkpoint?.phase==="complete" || checkpoint?.phase==="segments_complete"){
@@ -1645,7 +1655,7 @@ async function generate(){
       }
     }
 
-    // v0.55 stores the large immutable phoneme matrix separately so the tiny
+    // v0.56 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1813,7 +1823,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.55: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.56: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1823,7 +1833,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.55-low-overhead"
+      speedMode:"v0.56-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
