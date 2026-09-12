@@ -6,6 +6,8 @@ let config=null;
 let loadedModelUrl=null;
 let loadedConfigUrl=null;
 let busy=false;
+let sessionRunCount=0;
+const SESSION_RECYCLE_EVERY=6;
 
 function ensureOrt(){
   if(ortReady) return;
@@ -52,6 +54,7 @@ async function ensureSession(modelUrl,configUrl){
   config=cfg;
   loadedModelUrl=modelUrl;
   loadedConfigUrl=configUrl;
+  sessionRunCount=0;
   return true;
 }
 
@@ -79,7 +82,26 @@ async function synthesize(msg){
     const data=result.output?.data;
     if(!data?.length) throw new Error("Das Modell hat kein Audio ausgegeben.");
 
+    // Copy output away from ORT-owned memory before tensors/session are released.
     const audio=new Float32Array(data);
+    sessionRunCount+=1;
+    const recycleNow=sessionRunCount>=SESSION_RECYCLE_EVERY;
+
+    try{ for(const t of Object.values(feeds||{})) t?.dispose?.(); }catch(_){}
+    feeds=null;
+    try{ for(const t of Object.values(result||{})) t?.dispose?.(); }catch(_){}
+    result=null;
+
+    let recycleMs=0;
+    if(recycleNow && session){
+      const recycleStart=performance.now();
+      try{ await session.release(); }catch(_){}
+      session=null;
+      // Keep the worker/WASM runtime, but force a fresh ONNX session next request.
+      await new Promise(r=>setTimeout(r,900));
+      recycleMs=Math.round(performance.now()-recycleStart);
+    }
+
     self.postMessage({
       type:"result",
       requestId,
@@ -87,7 +109,10 @@ async function synthesize(msg){
       sampleRate:config?.audio?.sample_rate||22050,
       initialized,
       initMs:Math.round(afterInit-t0),
-      runMs:Math.round(performance.now()-runStart)
+      runMs:Math.round(performance.now()-runStart),
+      sessionRunCount:recycleNow ? SESSION_RECYCLE_EVERY : sessionRunCount,
+      sessionRecycled:recycleNow,
+      recycleMs
     },[audio.buffer]);
   }catch(err){
     self.postMessage({
@@ -109,6 +134,7 @@ self.onmessage=async(e)=>{
   if(msg.type==="close"){
     try{ await session?.release?.(); }catch(_){}
     session=null;
+    sessionRunCount=0;
     self.postMessage({type:"closed"});
     self.close();
     return;
