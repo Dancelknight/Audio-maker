@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.30";
+const LOG_VERSION = "0.31";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.30",{
+log("BOOT","App loaded v0.31",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -835,7 +835,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.30 START =====");
+  log("DIAG","===== DIAGNOSE v0.31 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -891,12 +891,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.30 OK =====");
+    log("DIAG","===== DIAGNOSE v0.31 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.30 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.31 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1007,7 +1007,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.30 were always encoded at 96 kbps.
+    // Jobs created before v0.31 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1152,7 +1152,7 @@ async function generate(){
 
       if(!audioClient){
         audioClient=createOnnxAudioClient();
-        log("ONNX_WORKER","batch start",{from:i+1,to:Math.min(i+3,chunks.length),mode:"low-memory"});
+        log("ONNX_WORKER","persistent worker start",{from:i+1,to:chunks.length,mode:"single-session"});
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
@@ -1183,20 +1183,16 @@ async function generate(){
         );
       }
 
-      // Reuse one ONNX session for at most three chunks, then destroy the whole worker.
-      // Three is intentionally conservative on iPhone Safari: it avoids the memory
-      // growth seen near the 4th/5th inference while still amortizing model init.
-      if(audioDone%3===0 || audioDone===chunks.length){
-        audioClient?.close();
-        audioClient=null;
-        log("ONNX_WORKER","batch released",{audioDone,total:chunks.length});
-        await sleep(650);
-      }else{
-        await sleep(80);
-      }
+      // Keep one ONNX/WASM session alive for the whole audio phase.
+      // On iOS Safari, repeatedly creating/terminating WASM workers can retain
+      // compiled memory and trigger WebContent process crashes.
+      await sleep(100);
       }
     }finally{
-      if(audioClient) audioClient.close();
+      if(audioClient){
+        audioClient.close();
+        log("ONNX_WORKER","persistent worker closed");
+      }
     }
 
     // FINAL ASSEMBLY: verify all persisted segments first.
@@ -1250,15 +1246,8 @@ async function generate(){
 
           log("REPAIR","segment restored",{index:i+1});
 
-          // Keep repair workers small as well.
-          if((m+1)%3===0 || (m+1)===missing.length){
-            repairClient.close();
-            repairClient=null;
-            log("REPAIR","worker batch released",{done:m+1,totalMissing:missing.length});
-            await sleep(300);
-          }else{
-            await sleep(80);
-          }
+          // Keep the repair worker alive too; avoid repeated WASM reinitialization.
+          await sleep(100);
         }
       }finally{
         if(repairClient) repairClient.close();
