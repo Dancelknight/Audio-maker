@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.34";
+const LOG_VERSION = "0.35";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -302,6 +302,9 @@ let lastStageStarted=0;
 let generationRunning=false;
 let backgroundPaused=false;
 
+const IS_IOS_WEBKIT=/iPad|iPhone|iPod/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent);
+const AUDIO_BACKEND=IS_IOS_WEBKIT ? "webgl" : "wasm";
+
 const STORAGE = {
   text: "gnr:text:v1",
   model: "gnr:model:v1",
@@ -392,7 +395,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.34",{
+log("BOOT","App loaded v0.35",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -408,7 +411,9 @@ log("BOOT","App loaded v0.34",{
   hasWebAssembly:"WebAssembly" in window,
   hasBigInt64Array:"BigInt64Array" in window,
   hasAudioContext:!!(window.AudioContext || window.webkitAudioContext),
-  ortVersion:window.ort?.version || "unknown"
+  ortVersion:window.ort?.version || "unknown",
+  audioBackend:AUDIO_BACKEND,
+  iosWebKit:IS_IOS_WEBKIT
 });
 
 try{
@@ -428,7 +433,8 @@ try{
       workerStage:prevCrash.workerStage||null,
       stageAgeMs:ageMs,
       visibilityAtLastMarker:prevCrash.visibility||null,
-      memory:prevCrash.memory||null
+      memory:prevCrash.memory||null,
+      backend:prevCrash.backend||null
     });
     clearCrashBreadcrumb("reported-after-reload");
   }
@@ -746,7 +752,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.34");
+  const worker=new Worker("./onnx-worker.js?v=0.35");
   let seq=0;
   let closed=false;
 
@@ -762,6 +768,7 @@ function createOnnxAudioClient(){
         chunkIndex:meta.index||null,
         ids:ids.length,
         textLength:text.length,
+        backend:AUDIO_BACKEND,
         memory:memorySnapshot()
       });
 
@@ -782,6 +789,7 @@ function createOnnxAudioClient(){
               outputBytes:msg.bytes||null,
               sessionRunCount:msg.sessionRunCount||null,
               workerTimestamp:msg.at||null,
+              backend:msg.backend||AUDIO_BACKEND,
               memory:memorySnapshot()
             });
             log("ONNX_STAGE",msg.stage,{
@@ -791,7 +799,8 @@ function createOnnxAudioClient(){
               modelBytes:msg.modelBytes||null,
               samples:msg.samples||null,
               bytes:msg.bytes||null,
-              sessionRunCount:msg.sessionRunCount||null
+              sessionRunCount:msg.sessionRunCount||null,
+              backend:msg.backend||AUDIO_BACKEND
             });
             return;
           }
@@ -822,7 +831,8 @@ function createOnnxAudioClient(){
           modelUrl:MODELS[els.modelSelect.value].model,
           configUrl:MODELS[els.modelSelect.value].config,
           ids,
-          speed
+          speed,
+          backend:AUDIO_BACKEND
         });
       }),120000,"ONNX-Worker");
 
@@ -842,7 +852,8 @@ function createOnnxAudioClient(){
         samples:audio.length,
         sampleRate:result.sampleRate||22050,
         textLength:text.length,
-        ids:ids.length
+        ids:ids.length,
+        backend:result.backend||AUDIO_BACKEND
       });
       if(result.sessionRecycled){
         log("ONNX_WORKER","session recycled in-place",{
@@ -969,7 +980,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.34 START =====");
+  log("DIAG","===== DIAGNOSE v0.35 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1025,12 +1036,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.34 OK =====");
+    log("DIAG","===== DIAGNOSE v0.35 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.34 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.35 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1154,7 +1165,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.34 stores the large immutable phoneme matrix separately so the tiny
+    // v0.35 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1288,11 +1299,12 @@ async function generate(){
       await sleep(700);
     }
 
-    // Audio generation runs in short page lifecycles.
-    // After 6 completed chunks we intentionally reload the whole page to reset
-    // Safari/WebKit/WASM memory before iOS can kill the WebContent process.
+    // v0.35: iPhone/iPad Safari uses WebGL instead of WASM for audio inference.
+    // WebGL keeps the model out of the unstable WASM path that repeatedly killed
+    // Safari during session.run/session.create. Desktop remains on WASM.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
     const lifecycleStartAudioDone=audioDone;
+    log("BACKEND","audio execution provider selected",{backend:AUDIO_BACKEND,iosWebKit:IS_IOS_WEBKIT});
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
@@ -1314,7 +1326,12 @@ async function generate(){
 
       if(!audioClient){
         audioClient=createOnnxAudioClient();
-        log("ONNX_WORKER","lifecycle worker start",{from:i+1,to:Math.min(i+AUDIO_CHUNKS_PER_LIFECYCLE,chunks.length),mode:"controlled-page-reload"});
+        log("ONNX_WORKER","audio worker start",{
+          from:i+1,
+          to:IS_IOS_WEBKIT?chunks.length:Math.min(i+AUDIO_CHUNKS_PER_LIFECYCLE,chunks.length),
+          mode:IS_IOS_WEBKIT?"webgl-mobile":"controlled-page-reload",
+          backend:AUDIO_BACKEND
+        });
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
@@ -1345,7 +1362,7 @@ async function generate(){
       }
 
       const chunksThisLifecycle=audioDone-lifecycleStartAudioDone;
-      if(audioDone<chunks.length && chunksThisLifecycle>=AUDIO_CHUNKS_PER_LIFECYCLE){
+      if(AUDIO_BACKEND==="wasm" && audioDone<chunks.length && chunksThisLifecycle>=AUDIO_CHUNKS_PER_LIFECYCLE){
         localStorage.setItem(RESUME_KEY,jobKey);
         clearCrashBreadcrumb("controlled-audio-reload");
         setStatus(
@@ -1473,7 +1490,13 @@ async function generate(){
   }catch(err){
     console.error(err);
     logError("GENERATE",err);
-    setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
+    if(AUDIO_BACKEND==="webgl" && /webgl|execution provider|operator|kernel|not supported/i.test(String(err?.message||err))){
+      setStatus("WebGL ist für dieses Piper-Modell auf diesem Safari nicht kompatibel: "+(err?.message||err),0);
+      try{localStorage.removeItem(RESUME_KEY)}catch(_){}
+      log("BACKEND","webgl incompatible - auto resume stopped",{message:err?.message||String(err)});
+    }else{
+      setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
+    }
   }finally{
     generationRunning=false;
     els.generate.disabled=!els.text.value.trim();
