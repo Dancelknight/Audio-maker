@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.38";
+const LOG_VERSION = "0.39";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -400,7 +400,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.38",{
+log("BOOT","App loaded v0.39",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -672,7 +672,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.38");
+  const worker=new Worker("./phonemizer-worker.js?v=0.39");
   let seq=0;
   const pending=new Map();
 
@@ -790,7 +790,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.38");
+  const worker=new Worker("./onnx-worker.js?v=0.39");
   let seq=0;
   let closed=false;
 
@@ -1018,7 +1018,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.38 START =====");
+  log("DIAG","===== DIAGNOSE v0.39 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1074,12 +1074,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.38 OK =====");
+    log("DIAG","===== DIAGNOSE v0.39 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.38 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.39 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1156,7 +1156,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.38 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.39 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1164,8 +1164,10 @@ async function generate(){
       try{
         const existingEva=await jobGet(newKey);
         const evaPhonemes=await loadPhonemes(newKey);
-        const looksLikeV036Migration=!!existingEva?.migratedPhonemesFrom ||
-          (!!existingEva && existingEva.phase==="audio" && Number(existingEva.audioDone||0)<=10 && Array.isArray(evaPhonemes));
+        // Only the real v0.36 migration job carries this explicit marker.
+        // NEVER infer corruption from a low audioDone value: a perfectly valid
+        // Eva job is expected to have audioDone 1..6 before a controlled reload.
+        const looksLikeV036Migration=!!existingEva?.migratedPhonemesFrom;
         if(looksLikeV036Migration){
           log("MOBILE","invalid v0.36 Eva phonemes detected",{jobKey:newKey,audioDone:existingEva?.audioDone||0});
           await resetJobData(newKey,chunks.length,"v0.36-thorsten-phonemes-in-eva");
@@ -1182,7 +1184,14 @@ async function generate(){
         if(resumed && Number(resumed.total)===chunks.length){
           checkpoint=resumed;
           jobKey=resumeKey;
-          log("CHECKPOINT","resume key accepted",{jobKey,phase:checkpoint.phase,done:checkpoint.done,audioDone:checkpoint.audioDone});
+          log("CHECKPOINT","resume key accepted",{
+            jobKey,
+            phase:checkpoint.phase,
+            done:checkpoint.done,
+            audioDone:checkpoint.audioDone,
+            phonemeModelKey:checkpoint.phonemeModelKey||null,
+            preserveAudio:checkpoint.phase==="audio"
+          });
         }
       }catch(err){
         logError("resume key lookup",err);
@@ -1226,7 +1235,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.38 stores the large immutable phoneme matrix separately so the tiny
+    // v0.39 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1251,6 +1260,9 @@ async function generate(){
       }
     }
     if(!Array.isArray(phonemeBatches) || phonemeBatches.length!==chunks.length){
+      if(phase==="audio"){
+        throw new Error("Audio-Checkpoint vorhanden, aber gespeicherte Phoneme fehlen oder sind unvollständig. Audiojob wird nicht automatisch auf Phonemisierung zurückgesetzt.");
+      }
       phonemeBatches=new Array(chunks.length);
       phase="phoneme";
       startIndex=0;
@@ -1391,7 +1403,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.38: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.39: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1465,9 +1477,11 @@ async function generate(){
         );
         log("CHECKPOINT","controlled reload audio",{
           jobKey,
+          phase:"audio",
           audioDone,
           total:chunks.length,
-          chunksThisLifecycle
+          chunksThisLifecycle,
+          nextAudio:audioDone+1
         });
         if(audioClient){
           audioClient.hardTerminate();
