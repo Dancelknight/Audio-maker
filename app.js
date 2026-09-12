@@ -739,6 +739,12 @@ function createOnnxAudioClient(){
         textLength:text.length,
         ids:ids.length
       });
+      if(result.sessionRecycled){
+        log("ONNX_WORKER","session recycled in-place",{
+          afterRuns:result.sessionRunCount,
+          recycleMs:result.recycleMs||0
+        });
+      }
 
       return {audio,sampleRate:result.sampleRate||22050};
     },
@@ -1166,7 +1172,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // Audio generation runs exclusively in disposable ONNX workers.
+    // Audio generation runs exclusively in one worker; only its ONNX session is periodically recycled.
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
