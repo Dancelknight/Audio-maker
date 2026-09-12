@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.32";
+const LOG_VERSION = "0.33";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -35,6 +35,45 @@ function logError(scope, err){
     message: err?.message || String(err),
     stack: err?.stack || null
   });
+}
+
+const CRASH_FORENSICS_KEY="gnr:crash-forensics:v1";
+const SESSION_INSTANCE_ID=Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,8);
+
+function persistCrashBreadcrumb(stage,data={}){
+  try{
+    const payload={
+      active:true,
+      version:LOG_VERSION,
+      sessionId:SESSION_INSTANCE_ID,
+      stage,
+      ts:Date.now(),
+      visibility:document.visibilityState,
+      ...data
+    };
+    localStorage.setItem(CRASH_FORENSICS_KEY,JSON.stringify(payload));
+  }catch(_){}
+}
+function clearCrashBreadcrumb(reason="completed"){
+  try{
+    const prev=JSON.parse(localStorage.getItem(CRASH_FORENSICS_KEY)||"null");
+    if(prev){
+      localStorage.setItem(CRASH_FORENSICS_KEY,JSON.stringify({
+        ...prev,active:false,clearedAt:Date.now(),clearReason:reason
+      }));
+    }
+  }catch(_){}
+}
+function readCrashBreadcrumb(){
+  try{return JSON.parse(localStorage.getItem(CRASH_FORENSICS_KEY)||"null")}catch(_){return null}
+}
+function memorySnapshot(){
+  const pm=performance?.memory;
+  return {
+    jsHeapUsed:pm?.usedJSHeapSize||null,
+    jsHeapTotal:pm?.totalJSHeapSize||null,
+    jsHeapLimit:pm?.jsHeapSizeLimit||null
+  };
 }
 
 window.addEventListener("error", e => {
@@ -353,7 +392,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.32",{
+log("BOOT","App loaded v0.33",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -371,6 +410,29 @@ log("BOOT","App loaded v0.32",{
   hasAudioContext:!!(window.AudioContext || window.webkitAudioContext),
   ortVersion:window.ort?.version || "unknown"
 });
+
+try{
+  const prevCrash=readCrashBreadcrumb();
+  if(prevCrash?.active && prevCrash.sessionId!==SESSION_INSTANCE_ID){
+    const ageMs=Date.now()-Number(prevCrash.ts||0);
+    log("CRASH_FORENSICS","probable previous hard crash",{
+      previousVersion:prevCrash.version||null,
+      stage:prevCrash.stage||null,
+      chunkIndex:prevCrash.chunkIndex||null,
+      requestId:prevCrash.requestId||null,
+      ids:prevCrash.ids||null,
+      textLength:prevCrash.textLength||null,
+      modelBytes:prevCrash.modelBytes||null,
+      outputSamples:prevCrash.outputSamples||null,
+      outputBytes:prevCrash.outputBytes||null,
+      workerStage:prevCrash.workerStage||null,
+      stageAgeMs:ageMs,
+      visibilityAtLastMarker:prevCrash.visibility||null,
+      memory:prevCrash.memory||null
+    });
+    clearCrashBreadcrumb("reported-after-reload");
+  }
+}catch(err){logError("crash forensic boot report",err)}
 
 
 function setStatus(msg, progress=null, right=""){
@@ -684,28 +746,70 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.32");
+  const worker=new Worker("./onnx-worker.js?v=0.33");
   let seq=0;
   let closed=false;
 
   return {
-    async synthesize(ids,text,speed,stageCb=()=>{}){
+    async synthesize(ids,text,speed,stageCb=()=>{},meta={}){
       if(closed) throw new Error("ONNX worker already closed");
       await waitUntilVisible();
       stageCb("Audio-Berechnung …");
       const requestId=++seq;
       const t0=performance.now();
+      persistCrashBreadcrumb("workerRequest:start",{
+        requestId,
+        chunkIndex:meta.index||null,
+        ids:ids.length,
+        textLength:text.length,
+        memory:memorySnapshot()
+      });
 
       const result=await withTimeout(new Promise((resolve,reject)=>{
         const onMessage=(e)=>{
           const msg=e.data||{};
           if(msg.requestId!==requestId) return;
+
+          if(msg.type==="stage"){
+            persistCrashBreadcrumb("worker:"+msg.stage,{
+              requestId,
+              chunkIndex:meta.index||null,
+              ids:ids.length,
+              textLength:text.length,
+              workerStage:msg.stage,
+              modelBytes:msg.modelBytes||null,
+              outputSamples:msg.samples||null,
+              outputBytes:msg.bytes||null,
+              sessionRunCount:msg.sessionRunCount||null,
+              workerTimestamp:msg.at||null,
+              memory:memorySnapshot()
+            });
+            log("ONNX_STAGE",msg.stage,{
+              requestId,
+              chunkIndex:meta.index||null,
+              ids:ids.length,
+              modelBytes:msg.modelBytes||null,
+              samples:msg.samples||null,
+              bytes:msg.bytes||null,
+              sessionRunCount:msg.sessionRunCount||null
+            });
+            return;
+          }
+
           worker.removeEventListener("message",onMessage);
           worker.removeEventListener("error",onError);
           if(msg.type==="result") resolve(msg);
           else reject(Object.assign(new Error(msg.message||"ONNX worker error"),{name:msg.name||"Error",stack:msg.stack||null}));
         };
         const onError=(e)=>{
+          persistCrashBreadcrumb("worker:error",{
+            requestId,
+            chunkIndex:meta.index||null,
+            ids:ids.length,
+            textLength:text.length,
+            message:e.message||"ONNX worker failed",
+            memory:memorySnapshot()
+          });
           worker.removeEventListener("message",onMessage);
           worker.removeEventListener("error",onError);
           reject(new Error(e.message||"ONNX worker failed"));
@@ -724,6 +828,7 @@ function createOnnxAudioClient(){
 
       const audio=result.audio instanceof Float32Array ? result.audio : new Float32Array(result.audio||[]);
       if(!audio.length) throw new Error("ONNX-Worker hat kein Audio geliefert.");
+      clearCrashBreadcrumb("onnx-result-received");
 
       log("ONNX_WORKER","done",{
         requestId,
@@ -858,7 +963,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.32 START =====");
+  log("DIAG","===== DIAGNOSE v0.33 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -914,12 +1019,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.32 OK =====");
+    log("DIAG","===== DIAGNOSE v0.33 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.32 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.33 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -938,12 +1043,14 @@ async function waitUntilVisible(){
 async function encodeAndPersistAudioChunk({jobKey,index,chunk,ids,speed,sPause,pPause,mp3Bitrate,audioClient,prefix,pct}){
   const workerResult=await audioClient.synthesize(
     ids,chunk.text,speed,
-    (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
+    (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`),
+    {index:index+1}
   );
   const f32=workerResult.audio;
   const sr=workerResult.sampleRate;
 
   setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
+  persistCrashBreadcrumb("mp3Encode:start",{chunkIndex:index+1,outputSamples:f32.length,outputBytes:f32.byteLength,memory:memorySnapshot()});
 
   const enc=new window.lamejs.Mp3Encoder(1,sr,mp3Bitrate);
   const segParts=[];
@@ -954,11 +1061,14 @@ async function encodeAndPersistAudioChunk({jobKey,index,chunk,ids,speed,sPause,p
   if(tail.length) segParts.push(new Uint8Array(tail));
 
   const segmentBlob=new Blob(segParts,{type:"audio/mpeg"});
+  clearCrashBreadcrumb("mp3-encoded");
   log("CHUNK","segment encoded",{index:index+1,parts:segParts.length,bytes:segmentBlob.size});
 
   await sleep(80);
   await waitUntilVisible();
+  persistCrashBreadcrumb("indexedDB:audioSave:start",{chunkIndex:index+1,segmentBytes:segmentBlob.size,memory:memorySnapshot()});
   await jobPutAudioBlob(`${jobKey}:audio:${index}`,jobKey,index,segmentBlob);
+  clearCrashBreadcrumb("indexeddb-audio-saved");
   log("CHUNK","segment saved",{index:index+1,bytes:segmentBlob.size});
   return segmentBlob.size;
 }
@@ -1030,7 +1140,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.32 were always encoded at 96 kbps.
+    // Jobs created before v0.33 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1038,7 +1148,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.32 stores the large immutable phoneme matrix separately so the tiny
+    // v0.33 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
