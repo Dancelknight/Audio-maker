@@ -7,7 +7,6 @@ let loadedModelUrl=null;
 let loadedConfigUrl=null;
 let busy=false;
 let sessionRunCount=0;
-const SESSION_RECYCLE_EVERY=6;
 
 function ensureOrt(){
   if(ortReady) return;
@@ -114,7 +113,6 @@ async function synthesize(msg){
     const audio=new Float32Array(data);
     stage(requestId,"audioCopy:done",{samples:audio.length,bytes:audio.byteLength});
     sessionRunCount+=1;
-    const recycleNow=sessionRunCount>=SESSION_RECYCLE_EVERY;
 
     stage(requestId,"tensorDispose:start");
     try{ for(const t of Object.values(feeds||{})) t?.dispose?.(); }catch(_){}
@@ -122,19 +120,6 @@ async function synthesize(msg){
     try{ for(const t of Object.values(result||{})) t?.dispose?.(); }catch(_){}
     result=null;
     stage(requestId,"tensorDispose:done");
-
-    let recycleMs=0;
-    if(recycleNow && session){
-      const recycleStart=performance.now();
-      stage(requestId,"sessionRelease:start",{reason:"periodic",afterRuns:sessionRunCount});
-      try{ await session.release(); }catch(_){}
-      session=null;
-      stage(requestId,"sessionRelease:done",{reason:"periodic"});
-      // Keep the worker/WASM runtime, but force a fresh ONNX session next request.
-      await new Promise(r=>setTimeout(r,900));
-      recycleMs=Math.round(performance.now()-recycleStart);
-      stage(requestId,"sessionRecycle:idleDone",{recycleMs});
-    }
 
     stage(requestId,"resultPost:start",{samples:audio.length,bytes:audio.byteLength});
     self.postMessage({
@@ -145,9 +130,9 @@ async function synthesize(msg){
       initialized,
       initMs:Math.round(afterInit-t0),
       runMs:Math.round(performance.now()-runStart),
-      sessionRunCount:recycleNow ? SESSION_RECYCLE_EVERY : sessionRunCount,
-      sessionRecycled:recycleNow,
-      recycleMs
+      sessionRunCount,
+      sessionRecycled:false,
+      recycleMs:0
     },[audio.buffer]);
   }catch(err){
     self.postMessage({
