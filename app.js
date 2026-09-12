@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.43";
+const LOG_VERSION = "0.44";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -333,7 +333,7 @@ let backgroundPaused=false;
 const IS_IOS_WEBKIT=/iPad|iPhone|iPod/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent);
 const AUDIO_BACKEND="wasm";
 const MOBILE_SAFE_MODEL="mobile_safe";
-const TEST_TEXT="don’t test this apple";
+const TEST_TEXT="Dies ist ein kurzer Test für die deutsche Sprachausgabe.";
 
 
 const STORAGE = {
@@ -435,7 +435,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.43",{
+log("BOOT","App loaded v0.44",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -707,7 +707,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.43");
+  const worker=new Worker("./phonemizer-worker.js?v=0.44");
   let seq=0;
   const pending=new Map();
 
@@ -825,7 +825,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.43");
+  const worker=new Worker("./onnx-worker.js?v=0.44");
   let seq=0;
   let closed=false;
 
@@ -972,10 +972,10 @@ function makeChunks(text,maxLen=110){
   // it exercises phonemization, multiple persisted MP3 parts and final assembly.
   if(cleanText(text)===TEST_TEXT){
     return [
-      {text:"don’t",paragraphEnd:false},
-      {text:"test",paragraphEnd:false},
-      {text:"this",paragraphEnd:false},
-      {text:"apple",paragraphEnd:true}
+      {text:"Dies ist",paragraphEnd:false},
+      {text:"ein kurzer Test",paragraphEnd:false},
+      {text:"für die deutsche",paragraphEnd:false},
+      {text:"Sprachausgabe.",paragraphEnd:true}
     ];
   }
   // Smaller chunks are deliberately used on iPhone/Safari to reduce peak memory and long blocking calls.
@@ -1063,7 +1063,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.43 START =====");
+  log("DIAG","===== DIAGNOSE v0.44 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1119,12 +1119,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.43 OK =====");
+    log("DIAG","===== DIAGNOSE v0.44 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.43 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.44 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1320,7 +1320,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.43 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.44 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1399,7 +1399,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.43 stores the large immutable phoneme matrix separately so the tiny
+    // v0.44 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1567,7 +1567,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.43: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.44: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1577,7 +1577,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.43-low-overhead"
+      speedMode:"v0.44-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
