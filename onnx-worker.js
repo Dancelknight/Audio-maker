@@ -1,6 +1,8 @@
-const ORT_JS="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js";
+const ORT_JS_WASM="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js";
+const ORT_JS_WEBGL="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.webgl.min.js";
 const ORT_WASM="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
 let ortReady=false;
+let ortBackend=null;
 let session=null;
 let config=null;
 let loadedModelUrl=null;
@@ -9,12 +11,18 @@ let loadedBackend=null;
 let busy=false;
 let sessionRunCount=0;
 
-function ensureOrt(){
-  if(ortReady) return;
-  importScripts(ORT_JS);
-  self.ort.env.wasm.wasmPaths=ORT_WASM;
-  self.ort.env.wasm.numThreads=1;
-  self.ort.env.wasm.simd=true;
+function ensureOrt(backend="wasm"){
+  if(ortReady){
+    if(ortBackend!==backend) throw new Error(`ORT worker already initialized for ${ortBackend}, cannot switch to ${backend}`);
+    return;
+  }
+  importScripts(backend==="webgl" ? ORT_JS_WEBGL : ORT_JS_WASM);
+  if(backend==="wasm"){
+    self.ort.env.wasm.wasmPaths=ORT_WASM;
+    self.ort.env.wasm.numThreads=1;
+    self.ort.env.wasm.simd=true;
+  }
+  ortBackend=backend;
   ortReady=true;
 }
 
@@ -42,9 +50,9 @@ async function cachedFetch(url){
 }
 
 async function ensureSession(modelUrl,configUrl,requestId,backend="wasm"){
-  stage(requestId,"ensureOrt:start");
-  ensureOrt();
-  stage(requestId,"ensureOrt:done");
+  stage(requestId,"ensureOrt:start",{backend});
+  ensureOrt(backend);
+  stage(requestId,"ensureOrt:done",{backend});
   if(session && loadedModelUrl===modelUrl && loadedConfigUrl===configUrl && loadedBackend===backend) return false;
 
   if(session){
