@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.31";
+const LOG_VERSION = "0.32";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.31",{
+log("BOOT","App loaded v0.32",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -433,7 +433,7 @@ async function jobFindBestResume(total){
           return;
         }
         const v=cursor.value;
-        const isMainJob=v && typeof v.key==="string" && !v.key.includes(":audio:");
+        const isMainJob=v && typeof v.key==="string" && !v.key.includes(":audio:") && !v.key.endsWith(":phonemes");
         if(isMainJob && Number(v.total)===Number(total)){
           const score=(v.phase==="audio"?1000000:0)+Number(v.audioDone||0)*1000+Number(v.done||0);
           const bestScore=best?((best.phase==="audio"?1000000:0)+Number(best.audioDone||0)*1000+Number(best.done||0)):-1;
@@ -444,6 +444,20 @@ async function jobFindBestResume(total){
       req.onerror=()=>reject(req.error||new Error("Jobsuche in IndexedDB fehlgeschlagen."));
     });
   }finally{db.close()}
+}
+
+async function savePhonemes(jobKey,phonemeBatches){
+  await jobPut({
+    key:`${jobKey}:phonemes`,
+    parent:jobKey,
+    phonemeBatches,
+    count:Array.isArray(phonemeBatches)?phonemeBatches.length:0,
+    updatedAt:Date.now()
+  });
+}
+async function loadPhonemes(jobKey){
+  const rec=await jobGet(`${jobKey}:phonemes`);
+  return Array.isArray(rec?.phonemeBatches)?rec.phonemeBatches:null;
 }
 
 async function jobDelete(key){
@@ -670,7 +684,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.27");
+  const worker=new Worker("./onnx-worker.js?v=0.32");
   let seq=0;
   let closed=false;
 
@@ -717,6 +731,9 @@ function createOnnxAudioClient(){
         initialized:!!result.initialized,
         initMs:result.initMs||0,
         runMs:result.runMs||null,
+        sessionRunCount:result.sessionRunCount||null,
+        sessionRecycled:!!result.sessionRecycled,
+        recycleMs:result.recycleMs||0,
         samples:audio.length,
         sampleRate:result.sampleRate||22050,
         textLength:text.length,
@@ -835,7 +852,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.31 START =====");
+  log("DIAG","===== DIAGNOSE v0.32 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -891,12 +908,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.31 OK =====");
+    log("DIAG","===== DIAGNOSE v0.32 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.31 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.32 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1007,15 +1024,31 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.31 were always encoded at 96 kbps.
+    // Jobs created before v0.32 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
-    let phonemeBatches=checkpoint?.phonemeBatches || new Array(chunks.length);
     let phase=checkpoint?.phase || "phoneme";
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
+    // v0.32 stores the large immutable phoneme matrix separately so the tiny
+    // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
+    let phonemeBatches=null;
+    try{
+      phonemeBatches=jobKey ? await loadPhonemes(jobKey) : null;
+    }catch(err){
+      logError("load separate phonemes",err);
+    }
+    if(!phonemeBatches && Array.isArray(checkpoint?.phonemeBatches)){
+      phonemeBatches=checkpoint.phonemeBatches;
+      try{
+        await savePhonemes(jobKey,phonemeBatches);
+        log("CHECKPOINT","legacy phonemes migrated",{jobKey,count:phonemeBatches.length});
+      }catch(err){
+        logError("migrate legacy phonemes",err);
+      }
+    }
     if(!Array.isArray(phonemeBatches) || phonemeBatches.length!==chunks.length){
       phonemeBatches=new Array(chunks.length);
       phase="phoneme";
@@ -1066,18 +1099,20 @@ async function generate(){
           }
 
           if((i+1)%25===0 || (i+1)===chunks.length){
+            await savePhonemes(jobKey,phonemeBatches);
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phonemeBatches,phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
             });
-            log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length});
+            log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length,separate:true});
           }
 
           if((i+1)%150===0 && (i+1)<chunks.length){
             if(client){client.close();client=null}
+            await savePhonemes(jobKey,phonemeBatches);
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phonemeBatches,phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
             });
             localStorage.setItem(RESUME_KEY,jobKey);
             setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
@@ -1094,9 +1129,10 @@ async function generate(){
       phase="audio";
       startIndex=chunks.length;
       audioDone=0;
+      await savePhonemes(jobKey,phonemeBatches);
       await jobPut({
         key:jobKey,done:chunks.length,total:chunks.length,
-        phonemeBatches,phase:"audio",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+        phase:"audio",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
       });
       localStorage.setItem(RESUME_KEY,jobKey);
       log("PHASE1","complete",{chunks:chunks.length});
@@ -1165,7 +1201,6 @@ async function generate(){
         key:jobKey,
         done:chunks.length,
         total:chunks.length,
-        phonemeBatches,
         phase:"audio",
         audioDone,
         bitrate:mp3Bitrate,
@@ -1280,6 +1315,7 @@ async function generate(){
     for(let i=0;i<chunks.length;i++){
       await jobDelete(`${jobKey}:audio:${i}`);
     }
+    await jobDelete(`${jobKey}:phonemes`);
     await jobDelete(jobKey);
     localStorage.removeItem(RESUME_KEY);
 
