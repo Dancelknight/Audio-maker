@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.45";
+const LOG_VERSION = "0.46";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -435,7 +435,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.45",{
+log("BOOT","App loaded v0.46",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -707,7 +707,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.45");
+  const worker=new Worker("./phonemizer-worker.js?v=0.46");
   let seq=0;
   const pending=new Map();
 
@@ -825,7 +825,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.45");
+  const worker=new Worker("./onnx-worker.js?v=0.46");
   let seq=0;
   let closed=false;
 
@@ -1064,7 +1064,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.45 START =====");
+  log("DIAG","===== DIAGNOSE v0.46 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1120,12 +1120,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.45 OK =====");
+    log("DIAG","===== DIAGNOSE v0.46 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.45 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.46 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1321,7 +1321,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.45 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.46 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1400,7 +1400,30 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.45 stores the large immutable phoneme matrix separately so the tiny
+    // v0.46: completed jobs keep one final MP3 record. Never re-enter the
+    // repair path merely because segment cleanup/reload happened later.
+    if(checkpoint?.phase==="complete"){
+      const finalRec=await jobGet(`${jobKey}:audio:final`);
+      if(finalRec?.blob){
+        if(resultUrl) URL.revokeObjectURL(resultUrl);
+        resultUrl=URL.createObjectURL(finalRec.blob);
+        els.audio.src=resultUrl;
+        els.download.href=resultUrl;
+        els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
+        els.result.classList.remove("hidden");
+        localStorage.removeItem(RESUME_KEY);
+        setStatus("Fertig. Gespeicherte MP3 wurde wiederhergestellt.",1,"100 %");
+        log("FINAL","completed MP3 restored",{jobKey,bytes:finalRec.blob.size});
+        return;
+      }
+      // A complete marker without a final blob is inconsistent; fall back to
+      // normal verification/repair rather than pretending the file exists.
+      phase="audio";
+      audioDone=Number(checkpoint?.audioDone||0);
+      log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
+    }
+
+    // v0.46 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1568,7 +1591,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.45: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.46: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1578,7 +1601,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.45-low-overhead"
+      speedMode:"v0.46-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1697,8 +1720,8 @@ async function generate(){
       });
       setStatus(
         `${missing.length} fehlende Audio-Segmente werden repariert …`,
-        .993,
-        "99 %"
+        .90,
+        "Reparatur 0 %"
       );
 
       let repairClient=null;
@@ -1719,14 +1742,21 @@ async function generate(){
             throw new Error(`Phoneme für Reparatur-Segment ${i+1} fehlen.`);
           }
 
+          const repairFraction=(m+1)/missing.length;
+          const repairProgress=.90+repairFraction*.09;
           const prefix=`Reparatur ${m+1}/${missing.length} · Segment ${i+1}`;
           log("REPAIR","segment start",{index:i+1,missingPosition:m+1,totalMissing:missing.length});
 
           await encodeAndPersistAudioChunk({
             jobKey,index:i,chunk,ids,speed,sPause,pPause,mp3Bitrate,
-            audioClient:repairClient,prefix,pct:.994
+            audioClient:repairClient,prefix,pct:repairProgress
           });
 
+          setStatus(
+            `Reparatur ${m+1}/${missing.length} abgeschlossen …`,
+            repairProgress,
+            `Reparatur ${Math.round(repairFraction*100)} %`
+          );
           log("REPAIR","segment restored",{index:i+1});
 
           // Yield briefly without adding a large per-segment delay.
@@ -1759,13 +1789,36 @@ async function generate(){
     els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
-    // Cleanup persistent job only after the final blob exists.
-    for(let i=0;i<chunks.length;i++){
-      await jobDelete(`${jobKey}:audio:${i}`);
-    }
-    await jobDelete(`${jobKey}:phonemes`);
-    await jobDelete(jobKey);
+    // v0.46 crash-safe completion:
+    // 1) persist the final MP3,
+    // 2) mark the parent complete,
+    // 3) clear auto-resume.
+    // Do NOT delete the segment records here. Older code deleted them one by
+    // one; if Safari died mid-cleanup, audioDone stayed at 665 while hundreds
+    // of blobs were already gone, which triggered a huge false "repair" pass.
+    await jobPut({
+      key:`${jobKey}:audio:final`,
+      parent:jobKey,
+      index:-1,
+      blob,
+      bytes:blob.size,
+      updatedAt:Date.now()
+    });
+    await jobPut({
+      key:jobKey,
+      done:chunks.length,
+      total:chunks.length,
+      phase:"complete",
+      audioDone:chunks.length,
+      bitrate:mp3Bitrate,
+      phonemeModelKey:els.modelSelect.value,
+      finalBytes:blob.size,
+      completedAt:Date.now(),
+      updatedAt:Date.now()
+    });
     localStorage.removeItem(RESUME_KEY);
+    clearCrashBreadcrumb("job-complete");
+    log("FINAL","job marked complete; segments retained",{jobKey,segments:chunks.length,blobBytes:blob.size});
 
     setStatus("Fertig. Eine komplette MP3 ist bereit.",1,"100 %");
   }catch(err){
