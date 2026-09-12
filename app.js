@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.53";
+const LOG_VERSION = "0.54";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -403,6 +403,10 @@ function restorePersistentState(){
   if(savedText){
     els.text.value = savedText;
     log("STORAGE","text restored",{chars:savedText.length});
+  }else{
+    els.text.value = TEST_TEXT;
+    savedText = TEST_TEXT;
+    log("STORAGE","default test text loaded",{chars:TEST_TEXT.length});
   }
 
   const savedModel = storageGet(STORAGE.model,"");
@@ -457,7 +461,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.53",{
+log("BOOT","App loaded v0.54",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -1244,7 +1248,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.53 START =====");
+  log("DIAG","===== DIAGNOSE v0.54 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1300,12 +1304,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.53 OK =====");
+    log("DIAG","===== DIAGNOSE v0.54 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.53 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.54 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1514,7 +1518,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.53 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.54 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1597,7 +1601,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.53: once all segment blobs are known to exist, never synthesize again.
+    // v0.54: once all segment blobs are known to exist, never synthesize again.
     // On iPhone we deliberately do NOT persist a second 20+ MB "final" blob,
     // because that extra IndexedDB write was the crash point after 665/665.
     if(checkpoint?.phase==="complete" || checkpoint?.phase==="segments_complete"){
@@ -1641,7 +1645,7 @@ async function generate(){
       }
     }
 
-    // v0.53 stores the large immutable phoneme matrix separately so the tiny
+    // v0.54 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1809,7 +1813,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.53: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.54: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1819,7 +1823,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.53-low-overhead"
+      speedMode:"v0.54-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -2127,8 +2131,8 @@ async function discoverRecoverableJob(){
     els.recoverJob.dataset.sourceKey=`${candidate.key}:source`;
     els.recoverJob.textContent=
       (candidate.phase==="complete"||candidate.phase==="segments_complete")
-        ? `Fertige MP3 wiederherstellen · ${Number(candidate.total||0)} Segmente`
-        : `Alten Job fortsetzen · ${Number(candidate.audioDone||0)}/${Number(candidate.total||0)}`;
+        ? `Nach Absturz wiederherstellen · ${Number(candidate.total||0)} Segmente`
+        : `Nach Absturz fortsetzen · ${Number(candidate.audioDone||0)}/${Number(candidate.total||0)}`;
     log("CHECKPOINT","recoverable job found",{jobKey:candidate.key,phase:candidate.phase,audioDone:candidate.audioDone,total:candidate.total,chars:source.length});
   }catch(err){
     logError("discover recoverable job",err);
@@ -2246,7 +2250,7 @@ els.fileInput.addEventListener("change",async e=>{
   }
 });
 
-els.loadBundled.addEventListener("click",async()=>{
+els.loadBundled?.addEventListener("click",async()=>{
   if(generationRunning){
     setStatus("Ein Job läuft gerade. Bitte zuerst abbrechen oder fertig laufen lassen.",els.progress.value);
     return;
