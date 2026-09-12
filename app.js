@@ -696,14 +696,22 @@ function createPhonemizerClient(){
       const t0=performance.now();
       const result=await withTimeout(new Promise((resolve,reject)=>{
         pending.set(requestId,{resolve,reject});
-        worker.postMessage({requestId,text,language:voice});
+        worker.postMessage({
+          requestId,
+          text,
+          language:voice,
+          configUrl:MODELS[els.modelSelect.value]?.config||null,
+          modelKey:els.modelSelect.value
+        });
       }),timeout,"Phonemizer-Worker");
       log("PHONEMIZER_WORKER","done",{
         requestId,
         ms:Math.round(performance.now()-t0),
         idCount:result.ids?.length||0,
         phonemeCount:result.phonemeCount||0,
-        processedText:result.processedText?.slice(0,140)||null
+        processedText:result.processedText?.slice(0,140)||null,
+        mapping:result.mapping||"unknown",
+        modelKey:result.modelKey||els.modelSelect.value
       });
       return result.ids;
     },
@@ -1197,40 +1205,6 @@ async function generate(){
       jobKey=newKey;
       checkpoint=await jobGet(jobKey);
 
-      // v0.37 mobile migration: reuse immutable German phoneme IDs from the most
-      // advanced old job, but start audio again at chunk 1 so one MP3 never mixes voices.
-      if(!checkpoint && mobileSafeJob){
-        try{
-          const source=await jobFindBestResume(chunks.length);
-          if(source && source.key!==jobKey){
-            const reusable=await loadPhonemes(source.key);
-            if(Array.isArray(reusable) && reusable.length===chunks.length){
-              await savePhonemes(jobKey,reusable);
-              checkpoint={
-                key:jobKey,
-                done:chunks.length,
-                total:chunks.length,
-                phase:"audio",
-                audioDone:0,
-                bitrate:selectedBitrate,
-                model:MOBILE_SAFE_MODEL,
-                migratedPhonemesFrom:source.key,
-                updatedAt:Date.now()
-              };
-              await jobPut(checkpoint);
-              localStorage.setItem(RESUME_KEY,jobKey);
-              log("MOBILE","reused phonemes for Eva K mobile-safe job",{
-                fromJob:source.key,
-                newJob:jobKey,
-                phonemeBatches:reusable.length,
-                audioRestartAt:1
-              });
-            }
-          }
-        }catch(err){
-          logError("mobile phoneme migration",err);
-        }
-      }
     }
 
     // Jobs created before bitrate-aware checkpoints may have been encoded at 96 kbps.
@@ -1246,6 +1220,13 @@ async function generate(){
     let phonemeBatches=null;
     try{
       phonemeBatches=jobKey ? await loadPhonemes(jobKey) : null;
+      if(phonemeBatches && checkpoint?.phonemeModelKey && checkpoint.phonemeModelKey!==els.modelSelect.value){
+        log("PHONEMIZER","stored phonemes belong to another model",{
+          stored:checkpoint.phonemeModelKey,
+          current:els.modelSelect.value
+        });
+        phonemeBatches=null;
+      }
     }catch(err){
       logError("load separate phonemes",err);
     }
@@ -1311,7 +1292,7 @@ async function generate(){
             await savePhonemes(jobKey,phonemeBatches);
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,phonemeModelKey:els.modelSelect.value,updatedAt:Date.now()
             });
             log("CHECKPOINT","saved phonemes",{jobKey,done:i+1,total:chunks.length,separate:true});
           }
@@ -1321,7 +1302,7 @@ async function generate(){
             await savePhonemes(jobKey,phonemeBatches);
             await jobPut({
               key:jobKey,done:i+1,total:chunks.length,
-              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+              phase:"phoneme",audioDone:0,bitrate:mp3Bitrate,phonemeModelKey:els.modelSelect.value,updatedAt:Date.now()
             });
             localStorage.setItem(RESUME_KEY,jobKey);
             setStatus(`Speicherbereinigung nach ${i+1} Abschnitten – wird automatisch fortgesetzt …`,pct,`${Math.round((i+1)/chunks.length*100)} %`);
@@ -1341,7 +1322,7 @@ async function generate(){
       await savePhonemes(jobKey,phonemeBatches);
       await jobPut({
         key:jobKey,done:chunks.length,total:chunks.length,
-        phase:"audio",audioDone:0,bitrate:mp3Bitrate,updatedAt:Date.now()
+        phase:"audio",audioDone:0,bitrate:mp3Bitrate,phonemeModelKey:els.modelSelect.value,updatedAt:Date.now()
       });
       localStorage.setItem(RESUME_KEY,jobKey);
       log("PHASE1","complete",{chunks:chunks.length});
@@ -1423,6 +1404,7 @@ async function generate(){
         phase:"audio",
         audioDone,
         bitrate:mp3Bitrate,
+        phonemeModelKey:els.modelSelect.value,
         updatedAt:Date.now()
       });
 
