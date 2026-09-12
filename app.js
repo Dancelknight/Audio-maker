@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.46";
+const LOG_VERSION = "0.47";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -138,7 +138,7 @@ const els = {
   paragraphPause:$("paragraphPause"), bitrate:$("bitrate"), generate:$("generate"),
   cancel:$("cancel"), result:$("result"), audio:$("audio"), download:$("download"), debugLog:$("debugLog"), copyLog:$("copyLog"), clearLog:$("clearLog"),
   computeMode:$("computeMode"), computeModeHint:$("computeModeHint"), hfEndpoint:$("hfEndpoint"), hfEndpointWrap:$("hfEndpointWrap"),
-  loadTestText:$("loadTestText")
+  loadTestText:$("loadTestText"), recoverJob:$("recoverJob")
 };
 
 const MODELS = {
@@ -435,7 +435,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.46",{
+log("BOOT","App loaded v0.47",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -566,6 +566,36 @@ async function savePhonemes(jobKey,phonemeBatches){
 async function loadPhonemes(jobKey){
   const rec=await jobGet(`${jobKey}:phonemes`);
   return Array.isArray(rec?.phonemeBatches)?rec.phonemeBatches:null;
+}
+
+async function saveJobSource(jobKey,text){
+  if(!jobKey || !text) return;
+  const key=`${jobKey}:source`;
+  const existing=await jobGet(key);
+  if(existing?.text===text) return;
+  await jobPut({key,parent:jobKey,text,chars:text.length,updatedAt:Date.now()});
+}
+async function loadJobSource(jobKey){
+  const rec=await jobGet(`${jobKey}:source`);
+  return typeof rec?.text==="string" ? rec.text : null;
+}
+async function listMainJobs(){
+  const db=await openJobDB();
+  try{
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(JOB_STORE,"readonly");
+      const req=tx.objectStore(JOB_STORE).openCursor();
+      const out=[];
+      req.onsuccess=()=>{
+        const cursor=req.result;
+        if(!cursor){ resolve(out); return; }
+        const v=cursor.value;
+        if(v && typeof v.key==="string" && /^job:[^:]+$/.test(v.key)) out.push(v);
+        cursor.continue();
+      };
+      req.onerror=()=>reject(req.error||new Error("Jobs konnten nicht gelesen werden."));
+    });
+  }finally{db.close()}
 }
 
 async function resetJobData(jobKey,total,reason="reset"){
@@ -707,7 +737,7 @@ function addId(ids,map,key){
   if(Array.isArray(v)) ids.push(...v); else ids.push(v);
 }
 function createPhonemizerClient(){
-  const worker=new Worker("./phonemizer-worker.js?v=0.46");
+  const worker=new Worker("./phonemizer-worker.js?v=0.47");
   let seq=0;
   const pending=new Map();
 
@@ -825,7 +855,7 @@ async function synthesize(text,speed,stageCb=()=>{}){
 }
 
 function createOnnxAudioClient(){
-  const worker=new Worker("./onnx-worker.js?v=0.46");
+  const worker=new Worker("./onnx-worker.js?v=0.47");
   let seq=0;
   let closed=false;
 
@@ -968,9 +998,9 @@ function splitLongSentence(s,maxLen){
   if(rest)out.push(rest); return out;
 }
 function makeChunks(text,maxLen=110){
-  // The built-in smoke test is deliberately split into four audio segments so
+  // The built-in smoke test is deliberately split into five audio segments so
   // it exercises phonemization, multiple persisted MP3 parts and final assembly.
-  if(cleanText(text)===TEST_TEXT){
+  if(cleanText(text)===cleanText(TEST_TEXT)){
     return [
       {text:"Dies ist ein kurzer Test",paragraphEnd:false},
       {text:"für die deutsche Sprachausgabe.",paragraphEnd:false},
@@ -1064,7 +1094,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.46 START =====");
+  log("DIAG","===== DIAGNOSE v0.47 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1120,12 +1150,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.46 OK =====");
+    log("DIAG","===== DIAGNOSE v0.47 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.46 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.47 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1299,6 +1329,7 @@ async function generate(){
   let jobKey=null;
   try{
     cancelRequested=false;
+    setGenerationUiLocked(true);
     els.generate.disabled=true;
     els.cancel.disabled=false;
     if(els.bitrate) els.bitrate.disabled=true;
@@ -1321,7 +1352,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.46 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.47 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1396,11 +1427,15 @@ async function generate(){
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
+    // Persist source text once so orphaned jobs can be recovered after a reload
+    // or after the user intentionally switches to another text.
+    try{ await saveJobSource(jobKey,txt); }catch(err){ logError("save job source",err); }
+
     let phase=checkpoint?.phase || "phoneme";
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.46: completed jobs keep one final MP3 record. Never re-enter the
+    // v0.47: completed jobs keep one final MP3 record. Never re-enter the
     // repair path merely because segment cleanup/reload happened later.
     if(checkpoint?.phase==="complete"){
       const finalRec=await jobGet(`${jobKey}:audio:final`);
@@ -1423,7 +1458,7 @@ async function generate(){
       log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
     }
 
-    // v0.46 stores the large immutable phoneme matrix separately so the tiny
+    // v0.47 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1591,7 +1626,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.46: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.47: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1601,7 +1636,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.46-low-overhead"
+      speedMode:"v0.47-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1789,7 +1824,7 @@ async function generate(){
     els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
-    // v0.46 crash-safe completion:
+    // v0.47 crash-safe completion:
     // 1) persist the final MP3,
     // 2) mark the parent complete,
     // 3) clear auto-resume.
@@ -1827,14 +1862,96 @@ async function generate(){
     setStatus(String(err?.message||err)==="Abgebrochen"?"Erzeugung abgebrochen.":"Fehler: "+(err?.message||err),0);
   }finally{
     generationRunning=false;
-    els.generate.disabled=!els.text.value.trim();
+    setGenerationUiLocked(false);
+    updateComputeModeUI();
     els.cancel.disabled=true;
-    els.preview.disabled=!session;
-    if(els.bitrate) els.bitrate.disabled=false;
+    els.preview.disabled=(els.computeMode?.value||"local")!=="local" || !session;
+    discoverRecoverableJob();
   }
 }
 
 let textSaveTimer=null;
+
+function setGenerationUiLocked(locked){
+  const controls=[
+    els.text,els.fileInput,els.loadTestText,els.loadBundled,els.clearText,
+    els.forgetSavedText,els.modelSelect,els.speed,els.sentencePause,
+    els.paragraphPause,els.bitrate,els.computeMode,els.hfEndpoint
+  ];
+  for(const el of controls){ if(el) el.disabled=!!locked; }
+  if(els.loadModel) els.loadModel.disabled=!!locked || (els.computeMode?.value||"local")!=="local";
+  if(els.diagnose) els.diagnose.disabled=!!locked;
+  if(els.recoverJob) els.recoverJob.disabled=!!locked;
+  if(els.cancel) els.cancel.disabled=!locked;
+}
+
+function detachActiveResume(reason="text-changed"){
+  try{
+    const old=localStorage.getItem(RESUME_KEY);
+    if(old){
+      localStorage.removeItem(RESUME_KEY);
+      log("CHECKPOINT","active resume detached but job retained",{jobKey:old,reason});
+    }
+  }catch(err){ logError("detach resume",err); }
+}
+
+async function discoverRecoverableJob(){
+  if(!els.recoverJob) return;
+  try{
+    const jobs=(await listMainJobs())
+      .filter(j=>j.phase!=="complete" && (Number(j.audioDone||0)>0 || Number(j.done||0)>0))
+      .sort((a,b)=>Number(b.updatedAt||0)-Number(a.updatedAt||0));
+    if(!jobs.length){
+      els.recoverJob.hidden=true;
+      return;
+    }
+
+    let candidate=null;
+    let source=null;
+    for(const j of jobs){
+      source=await loadJobSource(j.key);
+      if(source){ candidate=j; break; }
+    }
+
+    // Backward-compatible recovery for the existing 57,141-character lecture job:
+    // older versions did not persist the source text separately.
+    if(!candidate){
+      try{
+        const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
+        if(r.ok){
+          const bundled=await r.text();
+          const oldChunks=makeChunks(bundled,110);
+          for(const j of jobs){
+            if(Number(j.total)!==oldChunks.length) continue;
+            const bitrate=Number(j.bitrate||40);
+            const key=await makeJobKey(bundled,oldChunks,bitrate);
+            const legacy=await makeLegacyJobKey(bundled,oldChunks);
+            if(j.key===key || j.key===legacy){
+              candidate=j;
+              source=bundled;
+              await saveJobSource(j.key,bundled);
+              break;
+            }
+          }
+        }
+      }catch(err){ logError("legacy source recovery",err); }
+    }
+
+    if(!candidate || !source){
+      els.recoverJob.hidden=true;
+      return;
+    }
+    els.recoverJob.hidden=false;
+    els.recoverJob.dataset.jobKey=candidate.key;
+    els.recoverJob.dataset.sourceKey=`${candidate.key}:source`;
+    els.recoverJob.textContent=`Alten Job fortsetzen · ${Number(candidate.audioDone||0)}/${Number(candidate.total||0)}`;
+    log("CHECKPOINT","recoverable job found",{jobKey:candidate.key,phase:candidate.phase,audioDone:candidate.audioDone,total:candidate.total,chars:source.length});
+  }catch(err){
+    logError("discover recoverable job",err);
+    els.recoverJob.hidden=true;
+  }
+}
+
 function updateTextState({save=true, reason="edit"}={}){
   els.charCount.textContent=`${els.text.value.length.toLocaleString("de-DE")} Zeichen`;
   const mode=els.computeMode?.value||"local";
@@ -1855,16 +1972,22 @@ els.diagnose.addEventListener("click",diagnose);
 els.generate.addEventListener("click",handleGenerate);
 els.cancel.addEventListener("click",()=>{cancelRequested=true;els.cancel.disabled=true});
 
-els.text.addEventListener("input",()=>updateTextState({save:true,reason:"typing"}));
+els.text.addEventListener("input",()=>{
+  if(!generationRunning) detachActiveResume("typing");
+  updateTextState({save:true,reason:"typing"});
+  discoverRecoverableJob();
+});
 
 els.clearText.addEventListener("click",()=>{
+  detachActiveResume("clear-text");
   els.text.value="";
   persistText("clear");
   updateTextState({save:false});
 });
 
 els.forgetSavedText.addEventListener("click",()=>{
-  try{localStorage.removeItem(STORAGE.text)}catch(err){logError("remove saved text",err)}
+  detachActiveResume("forget-text");
+  try{localStorage.removeItem(STORAGE.text)catch(err){logError("remove saved text",err)}
   els.text.value="";
   updateTextState({save:false});
   if(els.saveState) els.saveState.textContent="Gespeicherter Text wurde gelöscht.";
@@ -1890,11 +2013,14 @@ els.hfEndpoint?.addEventListener("change",()=>storageSet(STORAGE.hfEndpoint,norm
 
 
 els.loadTestText?.addEventListener("click",()=>{
+  if(generationRunning) return;
+  detachActiveResume("load-test-text");
   els.text.value=TEST_TEXT;
   persistText("test-text");
   updateTextState({save:false});
-  setStatus("Test-Text geladen: 4 Segmente werden zu einer MP3 zusammengeführt.",els.progress.value);
-  log("TEST","test text loaded",{text:TEST_TEXT,segments:4});
+  setStatus("Test-Text geladen: 5 Segmente werden zu einer MP3 zusammengeführt.",els.progress.value);
+  log("TEST","test text loaded",{text:TEST_TEXT,segments:5});
+  discoverRecoverableJob();
 });
 
 els.fileInput.addEventListener("change",async e=>{
@@ -1902,6 +2028,7 @@ els.fileInput.addEventListener("change",async e=>{
   if(!f)return;
   try{
     const txt=await f.text();
+    detachActiveResume("file-upload");
     els.text.value=txt;
     persistText("file-upload");
     updateTextState({save:false});
@@ -1921,6 +2048,7 @@ els.loadBundled.addEventListener("click",async()=>{
     const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
     if(!r.ok)throw new Error(`HTTP ${r.status}`);
     const txt=await r.text();
+    detachActiveResume("bundled-text");
     els.text.value=txt;
     persistText("bundled-text");
     updateTextState({save:false});
@@ -1929,6 +2057,30 @@ els.loadBundled.addEventListener("click",async()=>{
   }catch(err){
     logError("bundled text",err);
     setStatus("Textdatei nicht gefunden. Nutze TXT auswählen.",0);
+  }
+});
+
+els.recoverJob?.addEventListener("click",async()=>{
+  if(generationRunning) return;
+  try{
+    const jobKey=els.recoverJob.dataset.jobKey;
+    if(!jobKey) throw new Error("Kein wiederherstellbarer Job gefunden.");
+    let source=await loadJobSource(jobKey);
+    if(!source){
+      const r=await fetch("./Mittelalter_Vorlesetext.txt",{cache:"no-store"});
+      if(r.ok) source=await r.text();
+    }
+    if(!source) throw new Error("Quelltext des alten Jobs konnte nicht wiederhergestellt werden.");
+    els.text.value=source;
+    persistText("recover-old-job");
+    updateTextState({save:false});
+    localStorage.setItem(RESUME_KEY,jobKey);
+    setStatus("Alter Job wiederhergestellt. Fortsetzung wird gestartet …",els.progress.value);
+    log("CHECKPOINT","manual recovery selected",{jobKey,chars:source.length});
+    await generate();
+  }catch(err){
+    logError("manual job recovery",err);
+    setStatus("Wiederherstellung fehlgeschlagen: "+(err?.message||err),0);
   }
 });
 
@@ -1968,6 +2120,7 @@ if(IS_IOS_WEBKIT && [...els.modelSelect.options].some(o=>o.value===MOBILE_SAFE_M
 }
 updateTextState({save:false});
 updateComputeModeUI();
+discoverRecoverableJob();
 
 setTimeout(()=>{
   try{
