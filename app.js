@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.51";
+const LOG_VERSION = "0.52";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -457,7 +457,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.51",{
+log("BOOT","App loaded v0.52",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -1222,7 +1222,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.51 START =====");
+  log("DIAG","===== DIAGNOSE v0.52 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -1278,12 +1278,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.51 OK =====");
+    log("DIAG","===== DIAGNOSE v0.52 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.51 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.52 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1492,7 +1492,7 @@ async function generate(){
 
     const mobileSafeJob=IS_IOS_WEBKIT && els.modelSelect.value===MOBILE_SAFE_MODEL;
 
-    // v0.51 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
+    // v0.52 one-time repair: v0.36 created an Eva job using Thorsten phoneme IDs.
     // Eva has a different phoneme-id table, so that job must be discarded and
     // phonemized again from scratch. The old Thorsten job uses a different key
     // and is deliberately left untouched.
@@ -1575,7 +1575,7 @@ async function generate(){
     let startIndex=Number(checkpoint?.done||0);
     let audioDone=Number(checkpoint?.audioDone||0);
 
-    // v0.51: completed jobs keep one final MP3 record. Never re-enter the
+    // v0.52: completed jobs keep one final MP3 record. Never re-enter the
     // repair path merely because segment cleanup/reload happened later.
     if(checkpoint?.phase==="complete"){
       const finalRec=await jobGet(`${jobKey}:audio:final`);
@@ -1598,7 +1598,7 @@ async function generate(){
       log("FINAL","complete marker missing final blob; falling back",{jobKey,audioDone});
     }
 
-    // v0.51 stores the large immutable phoneme matrix separately so the tiny
+    // v0.52 stores the large immutable phoneme matrix separately so the tiny
     // audio checkpoint no longer structured-clones all 665 arrays after every chunk.
     let phonemeBatches=null;
     try{
@@ -1766,7 +1766,7 @@ async function generate(){
       await sleep(700);
     }
 
-    // v0.51: iPhone/iPad Safari stays on WASM but uses the much smaller
+    // v0.52: iPhone/iPad Safari stays on WASM but uses the much smaller
     // Eva K x_low model. Eva's phoneme IDs are generated from scratch for Eva;
     // Thorsten phoneme IDs are never reused.
     const AUDIO_CHUNKS_PER_LIFECYCLE=6;
@@ -1776,7 +1776,7 @@ async function generate(){
       iosWebKit:IS_IOS_WEBKIT,
       mobileSafeJob,
       sessionPolicy:mobileSafeJob?"persistent-until-crash":"reload-every-6",
-      speedMode:"v0.51-low-overhead"
+      speedMode:"v0.52-low-overhead"
     });
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
@@ -1964,7 +1964,7 @@ async function generate(){
     els.download.download=`GermanReader_${new Date().toISOString().slice(0,10)}.mp3`;
     els.result.classList.remove("hidden");
 
-    // v0.51 crash-safe completion:
+    // v0.52 crash-safe completion:
     // 1) persist the final MP3,
     // 2) mark the parent complete,
     // 3) clear auto-resume.
