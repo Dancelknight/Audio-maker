@@ -5,6 +5,7 @@ let session=null;
 let config=null;
 let loadedModelUrl=null;
 let loadedConfigUrl=null;
+let loadedBackend=null;
 let busy=false;
 let sessionRunCount=0;
 
@@ -40,11 +41,11 @@ async function cachedFetch(url){
   return r;
 }
 
-async function ensureSession(modelUrl,configUrl,requestId){
+async function ensureSession(modelUrl,configUrl,requestId,backend="wasm"){
   stage(requestId,"ensureOrt:start");
   ensureOrt();
   stage(requestId,"ensureOrt:done");
-  if(session && loadedModelUrl===modelUrl && loadedConfigUrl===configUrl) return false;
+  if(session && loadedModelUrl===modelUrl && loadedConfigUrl===configUrl && loadedBackend===backend) return false;
 
   if(session){
     try{ await session.release(); }catch(_){}
@@ -64,29 +65,36 @@ async function ensureSession(modelUrl,configUrl,requestId){
   const [bytes,cfg]=await Promise.all([modelResp.arrayBuffer(),configResp.json()]);
   stage(requestId,"modelRead:done",{modelBytes:bytes.byteLength});
 
-  stage(requestId,"sessionCreate:start",{modelBytes:bytes.byteLength});
-  session=await self.ort.InferenceSession.create(bytes,{
-    executionProviders:["wasm"],
-    graphOptimizationLevel:"basic",
-    enableCpuMemArena:false,
-    enableMemPattern:false,
-    extra:{session:{disable_prepacking:"1"}}
-  });
-  stage(requestId,"sessionCreate:done");
+  stage(requestId,"sessionCreate:start",{modelBytes:bytes.byteLength,backend});
+  const sessionOptions = backend==="webgl"
+    ? {
+        executionProviders:["webgl"],
+        graphOptimizationLevel:"all"
+      }
+    : {
+        executionProviders:["wasm"],
+        graphOptimizationLevel:"basic",
+        enableCpuMemArena:false,
+        enableMemPattern:false,
+        extra:{session:{disable_prepacking:"1"}}
+      };
+  session=await self.ort.InferenceSession.create(bytes,sessionOptions);
+  stage(requestId,"sessionCreate:done",{backend});
   config=cfg;
   loadedModelUrl=modelUrl;
   loadedConfigUrl=configUrl;
+  loadedBackend=backend;
   sessionRunCount=0;
   return true;
 }
 
 async function synthesize(msg){
-  const {requestId,modelUrl,configUrl,ids,speed=1}=msg;
+  const {requestId,modelUrl,configUrl,ids,speed=1,backend="wasm"}=msg;
   let feeds=null;
   let result=null;
   try{
     const t0=performance.now();
-    const initialized=await ensureSession(modelUrl,configUrl,requestId);
+    const initialized=await ensureSession(modelUrl,configUrl,requestId,backend);
     const afterInit=performance.now();
 
     const idArray=Array.isArray(ids)?ids:Array.from(ids||[]);
@@ -102,7 +110,7 @@ async function synthesize(msg){
 
     stage(requestId,"feedsCreate:done",{ids:idArray.length});
     const runStart=performance.now();
-    stage(requestId,"sessionRun:start",{ids:idArray.length,sessionRunCount:sessionRunCount+1});
+    stage(requestId,"sessionRun:start",{ids:idArray.length,sessionRunCount:sessionRunCount+1,backend});
     result=await session.run(feeds);
     stage(requestId,"sessionRun:done",{runMs:Math.round(performance.now()-runStart)});
     const data=result.output?.data;
@@ -132,7 +140,8 @@ async function synthesize(msg){
       runMs:Math.round(performance.now()-runStart),
       sessionRunCount,
       sessionRecycled:false,
-      recycleMs:0
+      recycleMs:0,
+      backend
     },[audio.buffer]);
   }catch(err){
     self.postMessage({
@@ -154,6 +163,7 @@ self.onmessage=async(e)=>{
   if(msg.type==="close"){
     try{ await session?.release?.(); }catch(_){}
     session=null;
+    loadedBackend=null;
     sessionRunCount=0;
     self.postMessage({type:"closed"});
     self.close();
