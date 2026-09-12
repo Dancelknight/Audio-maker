@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.29";
+const LOG_VERSION = "0.30";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.29",{
+log("BOOT","App loaded v0.30",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -835,7 +835,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.29 START =====");
+  log("DIAG","===== DIAGNOSE v0.30 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -891,12 +891,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.29 OK =====");
+    log("DIAG","===== DIAGNOSE v0.30 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.29 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.30 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -1007,7 +1007,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.29 were always encoded at 96 kbps.
+    // Jobs created before v0.30 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1114,8 +1114,23 @@ async function generate(){
 
     await waitUntilVisible();
 
-    // Audio generation runs in a disposable ONNX worker.
-    // The main page no longer keeps a heavy ONNX session alive during long jobs.
+    // LOW-MEMORY AUDIO MODE:
+    // Never keep the preview/main-thread ONNX session alive while an audio worker
+    // owns its own model session. On iOS both live in the same WebKit process.
+    if(session){
+      try{
+        await session.release();
+        log("MODEL","main session released before audio phase");
+      }catch(err){
+        logError("main session release before audio phase",err);
+      }
+      session=null;
+      loadedModel=null;
+      config=null;
+      await sleep(700);
+    }
+
+    // Audio generation runs exclusively in disposable ONNX workers.
     const sPause=Number(els.sentencePause.value);
     const pPause=Number(els.paragraphPause.value);
     const speed=Number(els.speed.value);
@@ -1137,7 +1152,7 @@ async function generate(){
 
       if(!audioClient){
         audioClient=createOnnxAudioClient();
-        log("ONNX_WORKER","batch start",{from:i+1,to:Math.min(i+5,chunks.length)});
+        log("ONNX_WORKER","batch start",{from:i+1,to:Math.min(i+3,chunks.length),mode:"low-memory"});
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
@@ -1168,12 +1183,14 @@ async function generate(){
         );
       }
 
-      // Reuse one ONNX session for up to five chunks, then destroy the whole worker.
-      if(audioDone%5===0 || audioDone===chunks.length){
+      // Reuse one ONNX session for at most three chunks, then destroy the whole worker.
+      // Three is intentionally conservative on iPhone Safari: it avoids the memory
+      // growth seen near the 4th/5th inference while still amortizing model init.
+      if(audioDone%3===0 || audioDone===chunks.length){
         audioClient?.close();
         audioClient=null;
         log("ONNX_WORKER","batch released",{audioDone,total:chunks.length});
-        await sleep(350);
+        await sleep(650);
       }else{
         await sleep(80);
       }
@@ -1234,7 +1251,7 @@ async function generate(){
           log("REPAIR","segment restored",{index:i+1});
 
           // Keep repair workers small as well.
-          if((m+1)%5===0 || (m+1)===missing.length){
+          if((m+1)%3===0 || (m+1)===missing.length){
             repairClient.close();
             repairClient=null;
             log("REPAIR","worker batch released",{done:m+1,totalMissing:missing.length});
