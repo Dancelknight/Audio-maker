@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const LOG_VERSION = "0.27";
+const LOG_VERSION = "0.28";
 const PERSISTENT_LOG_KEY = "gnr:debuglog:v1";
 const TEXT_BACKUP_KEY = "gnr:text:backup:v1";
 let logLines = [];
@@ -353,7 +353,7 @@ window.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.
 window.ort.env.wasm.numThreads = 1; // iOS Safari: keep memory/threading conservative
 window.ort.env.wasm.simd = true;
 
-log("BOOT","App loaded v0.27",{
+log("BOOT","App loaded v0.28",{
   version:LOG_VERSION,
   href:location.href,
   userAgent:navigator.userAgent,
@@ -807,7 +807,7 @@ async function preview(){
 async function diagnose(){
   persistText("before-diagnose");
   els.diagnose.disabled=true;
-  log("DIAG","===== DIAGNOSE v0.27 START =====");
+  log("DIAG","===== DIAGNOSE v0.28 START =====");
 
   try{
     setStatus("Diagnose 1/8: Browser-Umgebung …",.04);
@@ -863,12 +863,12 @@ async function diagnose(){
     });
 
     setStatus("Diagnose OK: Piper-WASM, Deutsch und ONNX funktionieren.",1);
-    log("DIAG","===== DIAGNOSE v0.27 OK =====");
+    log("DIAG","===== DIAGNOSE v0.28 OK =====");
   }catch(err){
     console.error(err);
     logError("DIAG FAIL",err);
     setStatus("Diagnose-Fehler: "+(err?.message||err),0);
-    log("DIAG","===== DIAGNOSE v0.27 FEHLER =====");
+    log("DIAG","===== DIAGNOSE v0.28 FEHLER =====");
   }finally{
     els.diagnose.disabled=false;
     showDebugLog();
@@ -882,6 +882,34 @@ async function waitUntilVisible(){
     await sleep(500);
   }
   backgroundPaused=false;
+}
+
+async function encodeAndPersistAudioChunk({jobKey,index,chunk,ids,speed,sPause,pPause,mp3Bitrate,audioClient,prefix,pct}){
+  const workerResult=await audioClient.synthesize(
+    ids,chunk.text,speed,
+    (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
+  );
+  const f32=workerResult.audio;
+  const sr=workerResult.sampleRate;
+
+  setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
+
+  const enc=new window.lamejs.Mp3Encoder(1,sr,mp3Bitrate);
+  const segParts=[];
+  const pcm=floatToInt16(f32);
+  encodePCM(enc,pcm,segParts);
+  encodePCM(enc,silence(sr,chunk.paragraphEnd?pPause:sPause),segParts);
+  const tail=enc.flush();
+  if(tail.length) segParts.push(new Uint8Array(tail));
+
+  const segmentBlob=new Blob(segParts,{type:"audio/mpeg"});
+  log("CHUNK","segment encoded",{index:index+1,parts:segParts.length,bytes:segmentBlob.size});
+
+  await sleep(80);
+  await waitUntilVisible();
+  await jobPutAudioBlob(`${jobKey}:audio:${index}`,jobKey,index,segmentBlob);
+  log("CHUNK","segment saved",{index:index+1,bytes:segmentBlob.size});
+  return segmentBlob.size;
 }
 
 async function generate(){
@@ -918,7 +946,7 @@ async function generate(){
       checkpoint=await jobGet(jobKey);
     }
 
-    // Jobs created before v0.27 were always encoded at 96 kbps.
+    // Jobs created before v0.28 were always encoded at 96 kbps.
     // Never change their bitrate mid-job.
     const mp3Bitrate=Number(checkpoint?.bitrate || (jobKey===legacyKey ? 96 : selectedBitrate));
 
@@ -1052,35 +1080,9 @@ async function generate(){
       }
 
       log("CHUNK","audio start",{index:i+1,total:chunks.length,textLength:chunk.text.length,ids:ids.length});
-      const workerResult=await audioClient.synthesize(
-        ids,chunk.text,speed,
-        (stage)=>setStatus(`${prefix}: ${stage}`,pct,`${Math.round(pct*100)} %`)
-      );
-      const f32=workerResult.audio;
-      const sr=workerResult.sampleRate;
-
-      setStatus(`${prefix}: MP3-Segment speichern …`,pct,`${Math.round(pct*100)} %`);
-
-      // Fresh encoder per segment. Avoid merging all encoded frames into another large Uint8Array.
-      const enc=new window.lamejs.Mp3Encoder(1,sr,mp3Bitrate);
-      const segParts=[];
-      const pcm=floatToInt16(f32);
-      encodePCM(enc,pcm,segParts);
-      encodePCM(enc,silence(sr,chunk.paragraphEnd?pPause:sPause),segParts);
-      const tail=enc.flush();
-      if(tail.length) segParts.push(new Uint8Array(tail));
-
-      // Blob can reference the encoded parts without an additional full-size copy in JS heap.
-      const segmentBlob=new Blob(segParts,{type:"audio/mpeg"});
-      log("CHUNK","segment encoded",{index:i+1,parts:segParts.length,bytes:segmentBlob.size});
-
-      // Let temporary PCM/encoder allocations become collectible before IndexedDB write.
-      await sleep(80);
-
-      // iOS can invalidate IndexedDB while Safari is backgrounded.
-      // Never begin a write while hidden; the save helper also retries with a fresh DB connection.
-      await waitUntilVisible();
-      await jobPutAudioBlob(`${jobKey}:audio:${i}`,jobKey,i,segmentBlob);
+      const savedBytes=await encodeAndPersistAudioChunk({
+        jobKey,index:i,chunk,ids,speed,sPause,pPause,mp3Bitrate,audioClient,prefix,pct
+      });
 
       audioDone=i+1;
       await jobPut({
@@ -1094,7 +1096,7 @@ async function generate(){
         updatedAt:Date.now()
       });
 
-      log("CHUNK","segment saved",{index:i+1,total:chunks.length,bytes:segmentBlob.size,audioDone});
+      log("CHUNK","checkpoint advanced",{index:i+1,total:chunks.length,bytes:savedBytes,audioDone});
 
       if(audioDone<chunks.length){
         localStorage.setItem(RESUME_KEY,jobKey);
@@ -1119,15 +1121,80 @@ async function generate(){
       if(audioClient) audioClient.close();
     }
 
-    // FINAL ASSEMBLY: concatenate every persisted MP3 segment in order.
-    setStatus("Alle Audioteile fertig. Eine MP3 wird zusammengesetzt …",.995,"99 %");
-    log("FINAL","assembly start",{segments:chunks.length});
+    // FINAL ASSEMBLY: verify all persisted segments first.
+    // Safari may occasionally lose an IndexedDB record after a crash; repair only missing pieces.
+    setStatus("Alle Audioteile fertig. Segmente werden geprüft …",.992,"99 %");
+    log("FINAL","verification start",{segments:chunks.length});
+
+    const missing=[];
+    for(let i=0;i<chunks.length;i++){
+      const seg=await jobGet(`${jobKey}:audio:${i}`);
+      if(!seg?.blob) missing.push(i);
+      if((i+1)%50===0) await sleep(0);
+    }
+
+    if(missing.length){
+      log("FINAL","missing segments detected",{
+        count:missing.length,
+        first:missing.slice(0,20).map(i=>i+1)
+      });
+      setStatus(
+        `${missing.length} fehlende Audio-Segmente werden repariert …`,
+        .993,
+        "99 %"
+      );
+
+      let repairClient=null;
+      try{
+        for(let m=0;m<missing.length;m++){
+          const i=missing[m];
+          if(cancelRequested) throw new Error("Abgebrochen");
+          await waitUntilVisible();
+
+          if(!repairClient){
+            repairClient=createOnnxAudioClient();
+            log("REPAIR","worker batch start",{missingIndex:m+1,totalMissing:missing.length,segment:i+1});
+          }
+
+          const chunk=chunks[i];
+          const ids=phonemeBatches[i];
+          if(!Array.isArray(ids)||ids.length<4){
+            throw new Error(`Phoneme für Reparatur-Segment ${i+1} fehlen.`);
+          }
+
+          const prefix=`Reparatur ${m+1}/${missing.length} · Segment ${i+1}`;
+          log("REPAIR","segment start",{index:i+1,missingPosition:m+1,totalMissing:missing.length});
+
+          await encodeAndPersistAudioChunk({
+            jobKey,index:i,chunk,ids,speed,sPause,pPause,mp3Bitrate,
+            audioClient:repairClient,prefix,pct:.994
+          });
+
+          log("REPAIR","segment restored",{index:i+1});
+
+          // Keep repair workers small as well.
+          if((m+1)%5===0 || (m+1)===missing.length){
+            repairClient.close();
+            repairClient=null;
+            log("REPAIR","worker batch released",{done:m+1,totalMissing:missing.length});
+            await sleep(300);
+          }else{
+            await sleep(80);
+          }
+        }
+      }finally{
+        if(repairClient) repairClient.close();
+      }
+    }
+
+    setStatus("Alle Segmente vorhanden. Eine MP3 wird zusammengesetzt …",.995,"99 %");
+    log("FINAL","assembly start",{segments:chunks.length,repaired:missing.length});
 
     const finalParts=[];
     let totalBytes=0;
     for(let i=0;i<chunks.length;i++){
       const seg=await jobGet(`${jobKey}:audio:${i}`);
-      if(!seg?.blob) throw new Error(`Gespeichertes MP3-Segment ${i+1} fehlt.`);
+      if(!seg?.blob) throw new Error(`MP3-Segment ${i+1} fehlt auch nach Reparatur.`);
       finalParts.push(seg.blob);
       totalBytes+=seg.blob.size;
     }
